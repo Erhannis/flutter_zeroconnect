@@ -1,10 +1,16 @@
 library zeroconnect;
 
+import 'dart:async';
+import 'dart:developer';
 import 'dart:io';
 
 import 'package:collection/collection.dart';
+import 'package:multicast_dns/multicast_dns.dart';
 import 'package:network_info_plus/network_info_plus.dart';
+import 'package:sync/waitgroup.dart';
 import 'package:uuid/uuid.dart';
+
+import 'MessageSocket.dart';
 
 // Translated from https://github.com/Erhannis/zeroconnect/blob/master/zeroconnect/zeroconnect.py
 
@@ -26,7 +32,7 @@ String? _serviceToKey(String? serviceId) {
     if (serviceId == null) {
         return null;
     } else {
-        return "_$serviceId._http._tcp.local."; //CHECK Check
+        return "_$serviceId._http._tcp.local"; //CHECK Check
     }
 }
 
@@ -34,7 +40,7 @@ String? _nodeToKey(String? nodeId) {
     if (nodeId == null) {
         return null;
     } else {
-        return "$nodeId._http._tcp.local."; //CHECK //DITTO
+        return "$nodeId._http._tcp.local"; //CHECK //DITTO
     }
 }
 
@@ -182,10 +188,7 @@ class ZeroConnect {
      * Be warned that you should only have one adveristement running (locally?) with a given name - zeroconf
      * throws an exception otherwise.  However, if you create another ZeroConnect with a different name, it works fine.<br/>
      */
-    void advertise(self, callback, serviceId, port=0, host="0.0.0.0", mode=SocketMode.Messages) {
-        if serviceId == None:
-            raise Exception("serviceId required for advertising") #TODO Have an ugly default?
-
+    void advertise(callback, {required String serviceId, int port=0, String host="0.0.0.0", SocketMode mode=SocketMode.MESSAGES}) { //THINK Have an ugly default serviceId?
         def socketCallback(sock, addr):
             messageSock = MessageSocket(sock)
             messageSock.sendMsg(self.localId) # It appears both sides can send a message at the same time.  Different comms may give different results, though.
@@ -226,7 +229,7 @@ class ZeroConnect {
      * If `time` is zero, begin scanning (and DON'T STOP), and return previously discovered services.<br/>
      * If `time` is negative, DON'T scan, and instead just return previously discovered services.<br/>
      */
-    Future<Something> scan(self, serviceId=None, nodeId=None, time=30) async {
+    Future<Something> scan({String? serviceId, String? nodeId, int time=30}) async { //THINK time in ms?
         browser = None
         service_key = serviceToKey(serviceId)
         node_key = nodeToKey(nodeId)
@@ -246,7 +249,7 @@ class ZeroConnect {
     /**
      * Generator version of `scan`.<br/>
      */
-    Future<Something> scanGen(self, serviceId=None, nodeId=None, time=30) async {
+    Future<Something> scanGen({String? serviceId, String? nodeId, int time=30}) async {
         browser = None
         service_key = serviceToKey(serviceId)
         node_key = nodeToKey(nodeId)
@@ -322,7 +325,7 @@ class ZeroConnect {
      * Returns `(sock, Ad)`, or None if the timeout expires first.<br/>
      * If timeout == -1, don't scan, only use cached services.<br/>
      */
-    Future<Something> connectToFirst(self, serviceId=None, nodeId=None, localServiceId="", mode=SocketMode.Messages, timeout=30) async {
+    Future<Something> connectToFirst({String? serviceId, String? nodeId, String localServiceId="", SocketMode mode=SocketMode.MESSAGES, int timeout=30}) async { //THINK Timeout in ms?
         if serviceId == None and nodeId == None:
             raise Exception("Must have at least one id")
 
@@ -357,7 +360,7 @@ class ZeroConnect {
     }
 
     /**
-     * Attempts to connect to every address in the ad, but only uses the first success, and closes the rest.\n
+     * Attempts to connect to every address in the ad, but only uses the first success, and closes the rest.<br/>
      * <br/>
      * Returns a raw socket, or message socket, according to mode.<br/>
      * If no connection succeeded, returns None.<br/>
@@ -365,7 +368,7 @@ class ZeroConnect {
      * <br/>
      * (localServiceId is a nicety, to optionally tell the server what service you're associated with.)<br/>
      */
-    Future<Something> connect(self, ad, localServiceId="", mode=SocketMode.Messages) async {
+    Future<Something> connect(Ad ad, {String localServiceId="", SocketMode mode=SocketMode.MESSAGES}) async {
         lock = threading.Lock()
         sockSet = threading.Event()
         sock = None
@@ -428,7 +431,7 @@ class ZeroConnect {
     /**
      * Send message to all existing connections (matching service/node filter).<br/>
      */
-    Future<Something> broadcast(self, message, serviceId=None, nodeId=None) async {
+    Future<Something> broadcast(Something message, {String? serviceId, String? nodeId}) async {
         for connections in (self.incameConnections[(serviceId, nodeId)] + self.outgoneConnections[(serviceId, nodeId)]):
             for connection in list(connections):
                 try:
@@ -443,7 +446,7 @@ class ZeroConnect {
      * If you need to distinguish between connections that came in and connections that went out, see
      * `incameConnections` and `outgoneConnections`.<br/>
      */
-    Map<Something> getConnections(self) {
+    Map<Something> getConnections() {
         cons = {}
         cons.update(self.incameConnections)
         for key in self.outgoneConnections:
@@ -456,7 +459,7 @@ class ZeroConnect {
     /**
      * Unregisters and closes zeroconf, and closes all connections.<br/>
      */
-    Future<void> close(self) async {
+    Future<void> close() async {
         try:
             self.zeroconf.unregister_all_services()
         except:
@@ -472,4 +475,90 @@ class ZeroConnect {
                 except:
                     zerr(WARN, f"An error occurred closing connection {connection}")
     }
+}
+
+
+
+Future<MessageSocket?> autoconnect() async {
+    //TODO Doesn't distinguish between different power supply instances
+
+    log("create client");
+    final MDnsClient client = MDnsClient(rawDatagramSocketFactory: (dynamic host, int port, {bool? reuseAddress, bool? reusePort, int ttl = 1}) {
+        log("rawDatagramSocketFactory $host $port $reuseAddress $reusePort $ttl");
+        return RawDatagramSocket.bind(host, port, reuseAddress: true, reusePort: false, ttl: ttl);
+    });
+
+    log("start client");
+    await client.start();
+
+    var addresses = <InternetAddress>[];
+    int port = -1;
+    log("await ptr");
+    await for (final PtrResourceRecord ptr in client.lookup<PtrResourceRecord>(ResourceRecordQuery.serverPointer(_SERVICE))) {
+        log("in ptr lookup");
+
+        print("await srv1");
+        await for (final SrvResourceRecord srv in client.lookup<SrvResourceRecord>(ResourceRecordQuery.service(ptr.domainName))) {
+            print("in srv1");
+            print('instance found at ${srv.target}:${srv.port}.');
+            port = srv.port;
+        }
+
+        log("await addr lookup");
+        await for (final IPAddressResourceRecord addr in client.lookup<IPAddressResourceRecord>(ResourceRecordQuery.addressIPv4(ptr.domainName))) {
+            log("in addr lookup");
+            log("$addr");
+            addresses.add(addr.address);
+        }
+    }
+    log("$addresses $port");
+
+    if (port == -1) {
+        return null;
+    }
+
+    var wg = WaitGroup();
+    wg.add(1);
+
+    MessageSocket? mSock = null;
+
+    for (var addr in addresses) {
+        unawaited(Future(() async {
+            Socket? localSocket = null;
+            try {
+                localSocket = await Socket.connect(addr.address, port);
+
+                if (mSock != null) {
+                    localSocket.close();
+                    return;
+                }
+
+                log('connected via ${addr.address} $port');
+                mSock = MessageSocket(localSocket);
+
+                wg.done();
+            } catch (e) {
+                print("error connecting: ${addr.address} $port $e");
+                if (localSocket != null) {
+                    localSocket.close();
+                }
+            }
+        }));
+    }
+
+    await wg.wait().timeout(Duration(seconds: 15), onTimeout: () {}); //TODO Time?
+
+    log("stop client");
+    client.stop();
+    log("done");
+
+    final lSock = mSock;
+    if (lSock != null) {
+        await lSock.sendString(localId); // nodeId
+        await lSock.sendString("");      // serviceId
+        log("remote    nodeId ${String.fromCharCodes((await lSock.recvMsg())!)}"); // nodeId
+        log("remote serviceId ${String.fromCharCodes((await lSock.recvMsg())!)}"); // serviceId
+    }
+
+    return lSock;
 }
