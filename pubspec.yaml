@@ -12,6 +12,8 @@ dependencies:
     sdk: flutter
   sync: ^0.3.0
   multicast_dns: ^0.3.2+2
+  network_info_plus: ^3.0.1
+  uuid: ^3.0.7
 
 dev_dependencies:
   flutter_test:
