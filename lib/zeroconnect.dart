@@ -148,9 +148,21 @@ class ZeroConnect {
     final String localId;
 
     ZeroConnect({String? localId = null}) : this.localId = localId ?? const Uuid().v4() {
+        log("create client");
+        final MDnsClient client = MDnsClient(rawDatagramSocketFactory: (dynamic host, int port, {bool? reuseAddress, bool? reusePort, int ttl = 1}) {
+            log("rawDatagramSocketFactory $host $port $reuseAddress $reusePort $ttl");
+            return RawDatagramSocket.bind(host, port, reuseAddress: true, reusePort: false, ttl: ttl);
+        });
+
+        log("start client");
+        client.start().then((value) {
+            asdf; //NEXT
+        }, onError: (e){log(e);}); //THINK ???
+
+
         this.zeroconf = Zeroconf(ip_version=IPVersion.V4Only); //TODO All IPv?
         this.zcListener = DelegateListener(self.__update_service, self.__remove_service, self.__add_service);
-        this.localAds = set(); // set{Ad}
+        this.localAds = <Ad>{};
         this.remoteAds = FilterMap(2); // (type_, name) = set{Ad} //TODO Should we even PERMIT multiple ads per keypair?
         this.incameConnections = FilterMap(2); // (service, node) = list[messageSocket]
         this.outgoneConnections = FilterMap(2); // (service, node) = list[messageSocket]
@@ -477,21 +489,12 @@ class ZeroConnect {
     }
 }
 
+//RAINY Replace all references to "zeroconf" with "mdns".
 
 
 Future<MessageSocket?> autoconnect() async {
-    //TODO Doesn't distinguish between different power supply instances
 
-    log("create client");
-    final MDnsClient client = MDnsClient(rawDatagramSocketFactory: (dynamic host, int port, {bool? reuseAddress, bool? reusePort, int ttl = 1}) {
-        log("rawDatagramSocketFactory $host $port $reuseAddress $reusePort $ttl");
-        return RawDatagramSocket.bind(host, port, reuseAddress: true, reusePort: false, ttl: ttl);
-    });
-
-    log("start client");
-    await client.start();
-
-    var addresses = <InternetAddress>[];
+    var addresses = <InternetAddress>{};
     int port = -1;
     log("await ptr");
     await for (final PtrResourceRecord ptr in client.lookup<PtrResourceRecord>(ResourceRecordQuery.serverPointer(_SERVICE))) {
