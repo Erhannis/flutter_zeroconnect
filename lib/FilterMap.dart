@@ -138,4 +138,8 @@ class FilterMap<K, V> { //THINK extend/implement Map?  [] doesn't return V, but 
     Iterable<V> values() {
         return _map.values;
     }
+
+    void clear() {
+        _map.clear();
+    }
 }

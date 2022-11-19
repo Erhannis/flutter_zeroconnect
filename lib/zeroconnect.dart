@@ -10,7 +10,8 @@ import 'package:collection/collection.dart';
 import 'package:sync/sync.dart';
 import 'package:sync/waitgroup.dart';
 import 'package:uuid/uuid.dart';
-import 'package:nsd/nsd.dart';
+import 'package:nsd/nsd.dart' show Discovery, Registration, Service, ServiceStatus;
+import 'package:nsd/nsd.dart' as Nsd;
 
 import 'FilterMap.dart';
 import 'MessageSocket.dart';
@@ -18,7 +19,7 @@ import 'misc.dart';
 
 // Translated from https://github.com/Erhannis/zeroconnect/blob/master/zeroconnect/zeroconnect.py
 
-var ZC_LOGGING = 1; // Higher is noisier, up to, like, 10
+var ZC_LOGGING = 10; // Higher is noisier, up to, like, 10
 const ERROR = 0;
 const WARN = 1;
 const INFO = 2;
@@ -71,18 +72,6 @@ String _typeToService(String type_) { // This is kindof horrible, and brittle, a
 
 String _nameToNode(String name) {
     return name.substring("".length, name.length-("._tcp.").length); //CHECK //DITTO
-}
-
-class ZeroConnect {
-
-}
-
-
-
-
-//DUMMY This is almost definitely wrong
-class DelegateListener extends ServiceListener {
-    DelegateListener(this.update_service, this.remove_service, this.add_service);
 }
 
 enum SocketMode {
@@ -169,29 +158,15 @@ class Ad { // Man, this feels like LanCopy all over
 class ZeroConnect {
     final String localId;
 
+    var registrations = <Registration>{};
+    var discoveries = <Discovery>{};
     var localAds = <Ad>{};
     var remoteAds = FilterMap<String, Set<Ad>>(2); // (type_, name) = set{Ad} //TODO Should we even PERMIT multiple ads per keypair?
     var incameConnections = FilterMap<String, List<MessageSocket>>(2); // (service, node) = list[messageSocket]
     var outgoneConnections = FilterMap<String, List<MessageSocket>>(2); // (service, node) = list[messageSocket]
 
-    ZeroConnect({String? localId = null}) : this.localId = localId ?? const Uuid().v4() {
-        log("create client");
-        final MDnsClient client = MDnsClient(rawDatagramSocketFactory: (dynamic host, int port, {bool? reuseAddress, bool? reusePort, int ttl = 1}) {
-            log("rawDatagramSocketFactory $host $port $reuseAddress $reusePort $ttl");
-            return RawDatagramSocket.bind(host, port, reuseAddress: true, reusePort: false, ttl: ttl);
-        });
+    ZeroConnect({String? localId = null}) : this.localId = localId ?? const Uuid().v4();
 
-        log("start client");
-        client.start().then((value) {
-            asdf; //NEXT
-        }, onError: (e){log(e);}); //THINK ???
-
-
-        this.zeroconf = Zeroconf(ip_version=IPVersion.V4Only); //TODO All IPv?
-        this.zcListener = DelegateListener(self.__update_service, self.__remove_service, self.__add_service);
-    }
-
-    //DUMMY These are all wrong
     void __update_service(Service service) {
         zlog(INFO, "Service updated: $service");
         var ad = Ad.fromInfo(service);
@@ -229,7 +204,8 @@ class ZeroConnect {
      * Be warned that you should only have one adveristement running (locally?) with a given name - zeroconf
      * throws an exception otherwise.  However, if you create another ZeroConnect with a different name, it works fine.<br/>
      */
-    Future<void> advertise(void Function(MessageSocket sock, String nodeId, String serviceId) callback, {required String serviceId, int port=0, String host="0.0.0.0", SocketMode mode=SocketMode.MESSAGES}) async { //THINK Have an ugly default serviceId?
+    Future<void> advertise({required void Function(MessageSocket sock, String nodeId, String serviceId) callback, required String serviceId, int port=0, InternetAddress? host, SocketMode mode=SocketMode.MESSAGES}) async { //THINK Have an ugly default serviceId?
+        host ??= InternetAddress.anyIPv4; //THINK All IPvX?
         Future<void> socketCallback(Socket sock) async {
             var messageSock = MessageSocket(sock);
             await messageSock.sendString(localId); // It appears both sides can send a message at the same time.  Different comms may give different results, though.
@@ -249,18 +225,21 @@ class ZeroConnect {
             }
             incameConnections.getExact([clientNodeId, clientServiceId])!.add(messageSock);
             if (mode == SocketMode.RAW) {
-                callback(sock, clientNodeId, clientServiceId);
+                //CRASH
+                throw Exception("not implemented");
+                //callback(sock, clientNodeId, clientServiceId);
             } else if (mode == SocketMode.MESSAGES) {
                 callback(messageSock, clientNodeId, clientServiceId);
             }
         }
 
-        final ssock = await ServerSocket.bind(InternetAddress.anyIPv4, port); //THINK All IPvX?  //THINK Multiple interfaces?
+        final ssock = await ServerSocket.bind(host, port); //THINK Multiple interfaces?
         var lsub = ssock.listen(socketCallback); //LEAK This never exits, there's no way to cancel the advertisement
         port = ssock.port;
 
-        register(Service(name: localId, type: _serviceToKey(serviceId), port: port)).then((registration) {
+        Nsd.register(Service(name: localId, type: _serviceToKey(serviceId), port: port)).then((registration) {
             zlog(INFO, "registered: $registration");
+            registrations.add(registration);
             localAds.add(Ad(_serviceToKey(serviceId)!, localId, {registration.service.host!}, port, serviceId, localId)); // Can `host` be null?
         }).onError((e, st) {
             zlog(INFO, "registration error: $e @ $st");
@@ -279,7 +258,8 @@ class ZeroConnect {
         var node_key = _nodeToKey(nodeId);
 
         if (time.inMicroseconds >= 0) {
-            var discovery = await startDiscovery(service_key);
+            var discovery = await Nsd.startDiscovery(service_key);
+            discoveries.add(discovery);
             zlog(INFO, "discovery started");
             discovery.addServiceListener((service, status) {
                 zlog(INFO, "discovery service update: $service $status");
@@ -294,7 +274,8 @@ class ZeroConnect {
             });
             if (time.inMicroseconds > 0) {
                 await Future.delayed(time);
-                await stopDiscovery(discovery);
+                await Nsd.stopDiscovery(discovery);
+                discoveries.remove(discovery);
             }
         }
 
@@ -323,13 +304,17 @@ class ZeroConnect {
         if (time.inMicroseconds >= 0) {
             var newAds = StreamController<Ad>();
 
-            var discovery = await startDiscovery(service_key);
+            var discovery = await Nsd.startDiscovery(service_key);
+            discoveries.add(discovery);
             zlog(INFO, "discovery started");
             discovery.addServiceListener((service, status) {
                 zlog(INFO, "discovery service update: $service $status");
                 switch (status) {
                     case ServiceStatus.found:
                         var ad = Ad.fromInfo(service);
+                        if (localAds.contains(ad)) {
+                            break;
+                        }
                         if (!totalAds.contains(ad)) {
                             totalAds.add(ad);
                             newAds.add(ad);
@@ -343,7 +328,8 @@ class ZeroConnect {
             });
             if (time.inMicroseconds > 0) {
                 Future.delayed(time).then((_) async {
-                    await stopDiscovery(discovery);
+                    await Nsd.stopDiscovery(discovery);
+                    discoveries.remove(discovery);
                     await newAds.close();
                 });
             }
@@ -411,10 +397,15 @@ class ZeroConnect {
         MessageSocket? sock = null;
 
         Future<void> tryConnect(String addr, int port) async {
-            var localsock = await connectOutbound(addr, port);
-            if (localsock == null) {
+            Socket localsock;
+            try {
+                localsock = await Socket.connect(addr, port);
+                zlog(INFO, "Connected to client $addr on $port");
+            } catch (e) {
+                zlog(INFO, "Failed to connect to client $addr on $port : $e");
                 return;
             }
+
             await lock.acquire();
             var shouldClose = false;
             MessageSocket? messageSock;
@@ -427,7 +418,7 @@ class ZeroConnect {
                     var clientServiceId = await messageSock.recvString(); // Note that this might be empty
                     if ((clientNodeId == null || clientServiceId == null) || (clientNodeId.isEmpty && clientServiceId.isEmpty)) {
                         // Connection was canceled (or was invalid)
-                        zlog(INFO, "connection canceled from $addr");
+                        zlog(INFO, "connection canceled from $addr $port");
                         messageSock.close();
                     } else {
                         // The client might report different IDs than its service - is that problematic?
@@ -438,7 +429,9 @@ class ZeroConnect {
                         outgoneConnections.getExact([clientNodeId, clientServiceId])!.add(messageSock);
                         switch (mode) {
                             case SocketMode.RAW:
-                                sock = localsock;
+                                //CRASH
+                                throw Exception("not implemented");
+                                //sock = localsock;
                                 break;
                             case SocketMode.MESSAGES:
                                 sock = messageSock;
@@ -468,7 +461,7 @@ class ZeroConnect {
             unawaited(tryConnect(addr, ad.port));
         }
 
-        sockSet.wait(); // Note that this doesn't wait for the threads to finish.
+        await sockSet.wait(); // Note that this doesn't wait for the threads to finish.
 
         return sock;
     }
@@ -510,96 +503,34 @@ class ZeroConnect {
      * Unregisters and closes zeroconf, and closes all connections.<br/>
      */
     Future<void> close() async {
-        try:
-            self.zeroconf.unregister_all_services()
-        except:
-            zerr(WARN, f"An error occurred in zeroconf.unregister_all_services()")
-        try:
-            self.zeroconf.close()
-        except:
-            zerr(WARN, f"An error occurred in zeroconf.close()")
-        for connections in (self.incameConnections[(None,None)] + self.outgoneConnections[(None,None)]):
-            for connection in list(connections):
-                try:
-                    connection.close()
-                except:
-                    zerr(WARN, f"An error occurred closing connection {connection}")
+        for (var reg in registrations) {
+            try {
+                await Nsd.unregister(reg);
+            } catch (e) {
+                zerr(WARN, "An error occurred unregistering $reg");
+            }
+        }
+        registrations.clear();
+        for (var d in discoveries) {
+            try {
+                await Nsd.stopDiscovery(d);
+            } catch (e) {
+                zerr(WARN, "An error occurred stopping discovery $d");
+            }
+        }
+        discoveries.clear();
+        for (var connections in (incameConnections[<String?>[null, null]] + outgoneConnections[<String?>[null, null]])) {
+            for (var connection in connections) {
+                try {
+                    await connection.close();
+                } catch (e) {
+                    zerr(WARN, "An error occurred closing connection $connection : $e");
+                }
+            }
+        }
+        incameConnections.clear();
+        outgoneConnections.clear();
     }
 }
 
 //RAINY Replace all references to "zeroconf" with "mdns".
-
-
-Future<MessageSocket?> autoconnect() async {
-
-    var addresses = <InternetAddress>{};
-    int port = -1;
-    log("await ptr");
-    await for (final PtrResourceRecord ptr in client.lookup<PtrResourceRecord>(ResourceRecordQuery.serverPointer(_SERVICE))) {
-        log("in ptr lookup");
-
-        print("await srv1");
-        await for (final SrvResourceRecord srv in client.lookup<SrvResourceRecord>(ResourceRecordQuery.service(ptr.domainName))) {
-            print("in srv1");
-            print('instance found at ${srv.target}:${srv.port}.');
-            port = srv.port;
-        }
-
-        log("await addr lookup");
-        await for (final IPAddressResourceRecord addr in client.lookup<IPAddressResourceRecord>(ResourceRecordQuery.addressIPv4(ptr.domainName))) {
-            log("in addr lookup");
-            log("$addr");
-            addresses.add(addr.address);
-        }
-    }
-    log("$addresses $port");
-
-    if (port == -1) {
-        return null;
-    }
-
-    var wg = WaitGroup();
-    wg.add(1);
-
-    MessageSocket? mSock = null;
-
-    for (var addr in addresses) {
-        unawaited(Future(() async {
-            Socket? localSocket = null;
-            try {
-                localSocket = await Socket.connect(addr.address, port);
-
-                if (mSock != null) {
-                    localSocket.close();
-                    return;
-                }
-
-                log('connected via ${addr.address} $port');
-                mSock = MessageSocket(localSocket);
-
-                wg.done();
-            } catch (e) {
-                print("error connecting: ${addr.address} $port $e");
-                if (localSocket != null) {
-                    localSocket.close();
-                }
-            }
-        }));
-    }
-
-    await wg.wait().timeout(Duration(seconds: 15), onTimeout: () {}); //TODO Time?
-
-    log("stop client");
-    client.stop();
-    log("done");
-
-    final lSock = mSock;
-    if (lSock != null) {
-        await lSock.sendString(localId); // nodeId
-        await lSock.sendString("");      // serviceId
-        log("remote    nodeId ${String.fromCharCodes((await lSock.recvMsg())!)}"); // nodeId
-        log("remote serviceId ${String.fromCharCodes((await lSock.recvMsg())!)}"); // serviceId
-    }
-
-    return lSock;
-}
