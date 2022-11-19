@@ -1,38 +1,59 @@
 library zeroconnect;
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:developer';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:collection/collection.dart';
-import 'package:multicast_dns/multicast_dns.dart';
-import 'package:network_info_plus/network_info_plus.dart';
+import 'package:sync/sync.dart';
 import 'package:sync/waitgroup.dart';
 import 'package:uuid/uuid.dart';
+import 'package:nsd/nsd.dart';
 
+import 'FilterMap.dart';
 import 'MessageSocket.dart';
+import 'misc.dart';
 
 // Translated from https://github.com/Erhannis/zeroconnect/blob/master/zeroconnect/zeroconnect.py
 
+var ZC_LOGGING = 1; // Higher is noisier, up to, like, 10
+const ERROR = 0;
+const WARN = 1;
+const INFO = 2;
+const VERBOSE = 3;
+const DEBUG = 4;
 
-// https://stackoverflow.com/a/166591/513038
-Future<List<Address>> getAddresses() async { //THINK IPv6?
-    await NetworkInterface.list();
-    //await NetworkInfo().getWifiIP();
-    var addresses = {};
-    for ifaceName in interfaces() {
-        for i in ifaddresses(ifaceName).setdefault(AF_INET, []):
-        if "addr" in i:
-        addresses.add(socket.inet_aton(i["addr"]))
+void zlog(int level, String msg) {
+    if (level <= ZC_LOGGING) {
+        log(msg);
     }
-    return addresses
 }
+
+void zerr(int level, String msg) {
+    zlog(level, msg); // Originally logged to stderr instead
+}
+
+
+// // https://stackoverflow.com/a/166591/513038
+// Future<List<Address>> getAddresses() async { //THINK IPv6?
+//     await NetworkInterface.list();
+//     //await NetworkInfo().getWifiIP();
+//     var addresses = {};
+//     for ifaceName in interfaces() {
+//         for i in ifaddresses(ifaceName).setdefault(AF_INET, []):
+//         if "addr" in i:
+//         addresses.add(socket.inet_aton(i["addr"]))
+//     }
+//     return addresses
+// }
 
 String? _serviceToKey(String? serviceId) {
     if (serviceId == null) {
         return null;
     } else {
-        return "_$serviceId._http._tcp.local"; //CHECK Check
+        return "_$serviceId._tcp"; //CHECK Check
     }
 }
 
@@ -40,16 +61,16 @@ String? _nodeToKey(String? nodeId) {
     if (nodeId == null) {
         return null;
     } else {
-        return "$nodeId._http._tcp.local"; //CHECK //DITTO
+        return "$nodeId._tcp"; //CHECK //DITTO
     }
 }
 
 String _typeToService(String type_) { // This is kindof horrible, and brittle, and MAY be subject to accidental bad data
-    return type_.substring("_".length, type_.length-("._http._tcp.local.").length); //CHECK //DITTO
+    return type_.substring("_".length, type_.length-("._tcp.").length); //CHECK //DITTO
 }
 
 String _nameToNode(String name) {
-    return name.substring("".length, type_.length-("._http._tcp.local.").length); //CHECK //DITTO
+    return name.substring("".length, name.length-("._tcp.").length); //CHECK //DITTO
 }
 
 class ZeroConnect {
@@ -76,28 +97,28 @@ class Ad { // Man, this feels like LanCopy all over
     /**
      * Like, the zc.get_service_info info<br/>
      */
-    static Ad fromInfo(info) {
-        final type_ = info.type;
-        final name = info.name;
-        final addresses = tuple([socket.inet_ntoa(addr) for addr in info.addresses]);
-        final port = info.port;
-        final serviceId = _typeToService(type_);
+    static Ad fromInfo(Service info) {
+        //CHECK Maybe don't throw on nulls?
+        final type = info.type!;
+        final name = info.name!;
+        final addresses = {info.host!}; //THINK Maybe ip addresses //tuple([socket.inet_ntoa(addr) for addr in info.addresses]);
+        final port = info.port!;
+        final serviceId = _typeToService(type);
         final nodeId = _nameToNode(name);
-        return Ad(type_, name, addresses, port, serviceId, nodeId);
+        return Ad(type, name, addresses, port, serviceId, nodeId);
     }
 
-    //DUMMY Set types
-    final type;
-    final name;
-    final addresses;
-    final port;
+    final String type;
+    final String name;
+    final Set<String> addresses; //CHECK what type
+    final int port;
     final String serviceId;
     final String nodeId;
 
     Ad(this.type, this.name, this.addresses, this.port, this.serviceId, this.nodeId);
 
-    Pair<SomethingType, String> getKey(self) {
-        return (type, name);
+    List<String> getKey() {
+        return [type, name];
     }
 
     @override
@@ -105,17 +126,18 @@ class Ad { // Man, this feels like LanCopy all over
         return "Ad('$type','$name',$addresses,$port,'$serviceId','$nodeId')";
     }
 
-    bool operator ==(o) {
-        return o is Ad
-            && this.type == o.type
-            && this.name == o.name
-            && (const ListEquality().equals)(this.addresses, o.addresses)
-            && this.port == o.port
-            && this.serviceId == o.serviceId
-            && this.nodeId == o.nodeId;
+    @override
+    bool operator ==(other) {
+        return other is Ad
+            && this.type == other.type
+            && this.name == other.name
+            && (const SetEquality().equals)(this.addresses, other.addresses)
+            && this.port == other.port
+            && this.serviceId == other.serviceId
+            && this.nodeId == other.nodeId;
     }
 
-    int get hashCode => Object.hash(type, name, (const ListEquality().hash)(addresses), port, serviceId, nodeId);
+    int get hashCode => Object.hash(type, name, (const SetEquality().hash)(addresses), port, serviceId, nodeId);
 }
 
 //TODO Note: I'm not sure there aren't any race conditions in this.  I've been writing in Dart's strict threading model for months, and it took me a while to remember that race conditions exist
@@ -147,6 +169,11 @@ class Ad { // Man, this feels like LanCopy all over
 class ZeroConnect {
     final String localId;
 
+    var localAds = <Ad>{};
+    var remoteAds = FilterMap<String, Set<Ad>>(2); // (type_, name) = set{Ad} //TODO Should we even PERMIT multiple ads per keypair?
+    var incameConnections = FilterMap<String, List<MessageSocket>>(2); // (service, node) = list[messageSocket]
+    var outgoneConnections = FilterMap<String, List<MessageSocket>>(2); // (service, node) = list[messageSocket]
+
     ZeroConnect({String? localId = null}) : this.localId = localId ?? const Uuid().v4() {
         log("create client");
         final MDnsClient client = MDnsClient(rawDatagramSocketFactory: (dynamic host, int port, {bool? reuseAddress, bool? reusePort, int ttl = 1}) {
@@ -162,36 +189,38 @@ class ZeroConnect {
 
         this.zeroconf = Zeroconf(ip_version=IPVersion.V4Only); //TODO All IPv?
         this.zcListener = DelegateListener(self.__update_service, self.__remove_service, self.__add_service);
-        this.localAds = <Ad>{};
-        this.remoteAds = FilterMap(2); // (type_, name) = set{Ad} //TODO Should we even PERMIT multiple ads per keypair?
-        this.incameConnections = FilterMap(2); // (service, node) = list[messageSocket]
-        this.outgoneConnections = FilterMap(2); // (service, node) = list[messageSocket]
     }
 
     //DUMMY These are all wrong
-    void __update_service(self, zc: Zeroconf, type_: str, name: str) {
-        info = zc.get_service_info(type_, name)
-        zlog(INFO, f"Service {name} updated, service info: {info}")
-        if info != None:
-            ad = Ad.fromInfo(info)
-            if ad not in self.localAds:
-                self.remoteAds[ad.getKey()] = set()
-            self.remoteAds[ad.getKey()].add(ad) # Not even sure this is correct.  Should I remove the old record?  CAN I?
-        //TODO Anything else?
+    void __update_service(Service service) {
+        zlog(INFO, "Service updated: $service");
+        var ad = Ad.fromInfo(service);
+        if (!localAds.contains(ad)) { //THINK SHOULD I ignore stuff in localAds?
+            var ras = remoteAds.getExact(ad.getKey());
+            if (ras == null) {
+                ras = {};
+                remoteAds[ad.getKey()] = ras;
+            }
+            ras.add(ad); // Not even sure this is correct.  Should I remove existing old records?  CAN I?
+        }
     }
 
-    void __remove_service(self, zc: Zeroconf, type_: str, name: str) {
-        zlog(INFO, f"Service {name} removed")
+    void __remove_service(Service service) {
+        zlog(INFO, "Service removed: $service");
+        //MISC Maybe should remove from list?
     }
 
-    void __add_service(self, zc: Zeroconf, type_: str, name: str) {
-        info = zc.get_service_info(type_, name)
-        zlog(INFO, f"Service {name} added, service info: {info}")
-        if info != None:
-            ad = Ad.fromInfo(info)
-            if ad not in self.localAds:
-                self.remoteAds[ad.getKey()] = set()
-            self.remoteAds[ad.getKey()].add(ad)
+    void __add_service(Service service) {
+        zlog(INFO, "Service added: $service");
+        var ad = Ad.fromInfo(service);
+        if (!localAds.contains(ad)) { //THINK SHOULD I ignore stuff in localAds?
+            var ras = remoteAds.getExact(ad.getKey());
+            if (ras == null) {
+                ras = {};
+                remoteAds[ad.getKey()] = ras;
+            }
+            ras.add(ad); // Not even sure this is correct.  Should I remove existing old records?  CAN I?
+        }
     }
 
     /**
@@ -200,134 +229,126 @@ class ZeroConnect {
      * Be warned that you should only have one adveristement running (locally?) with a given name - zeroconf
      * throws an exception otherwise.  However, if you create another ZeroConnect with a different name, it works fine.<br/>
      */
-    void advertise(callback, {required String serviceId, int port=0, String host="0.0.0.0", SocketMode mode=SocketMode.MESSAGES}) { //THINK Have an ugly default serviceId?
-        def socketCallback(sock, addr):
-            messageSock = MessageSocket(sock)
-            messageSock.sendMsg(self.localId) # It appears both sides can send a message at the same time.  Different comms may give different results, though.
-            messageSock.sendMsg(serviceId)
-            clientNodeId = messageSock.recvMsg().decode("utf-8")
-            clientServiceId = messageSock.recvMsg().decode("utf-8") # Note that this might be empty
-            if not clientNodeId and not clientServiceId:
-                # Connection was canceled (or was invalid)
-                zlog(INFO, f"connection canceled from {addr}")
-                messageSock.close()
-                return
-            # The client might report different IDs than its service - is that problematic?
-            # ...Actually, clients don't need to have an advertised service in the first place.  So, no.
-            if (clientNodeId, clientServiceId) not in self.incameConnections:
-                self.incameConnections[(clientNodeId, clientServiceId)] = []
-            self.incameConnections[(clientNodeId, clientServiceId)].append(messageSock)
-            if mode == SocketMode.Raw:
-                callback(sock, clientNodeId, clientServiceId)
-            elif mode == SocketMode.Messages:
-                callback(messageSock, clientNodeId, clientServiceId)
+    Future<void> advertise(void Function(MessageSocket sock, String nodeId, String serviceId) callback, {required String serviceId, int port=0, String host="0.0.0.0", SocketMode mode=SocketMode.MESSAGES}) async { //THINK Have an ugly default serviceId?
+        Future<void> socketCallback(Socket sock) async {
+            var messageSock = MessageSocket(sock);
+            await messageSock.sendString(localId); // It appears both sides can send a message at the same time.  Different comms may give different results, though.
+            await messageSock.sendString(serviceId);
+            var clientNodeId = await messageSock.recvString();
+            var clientServiceId = await messageSock.recvString(); // Note that this might be empty
+            if ((clientNodeId == null || clientServiceId == null) || (clientNodeId.isEmpty && clientServiceId.isEmpty)) {
+                // Connection was canceled (or was invalid)
+                zlog(INFO, "connection canceled from $sock"); //CHECK Check for any e.g. {addr} instead of $addr
+                messageSock.close();
+                return;
+            }
+            // The client might report different IDs than its service - is that problematic?
+            // ...Actually, clients don't need to have an advertised service in the first place.  So, no.
+            if (incameConnections[[clientNodeId, clientServiceId]].isEmpty) {
+                incameConnections[[clientNodeId, clientServiceId]] = [];
+            }
+            incameConnections.getExact([clientNodeId, clientServiceId])!.add(messageSock);
+            if (mode == SocketMode.RAW) {
+                callback(sock, clientNodeId, clientServiceId);
+            } else if (mode == SocketMode.MESSAGES) {
+                callback(messageSock, clientNodeId, clientServiceId);
+            }
+        }
 
-        port = listen(socketCallback, port, host) #TODO Multiple interfaces?
+        final ssock = await ServerSocket.bind(InternetAddress.anyIPv4, port); //THINK All IPvX?  //THINK Multiple interfaces?
+        var lsub = ssock.listen(socketCallback); //LEAK This never exits, there's no way to cancel the advertisement
+        port = ssock.port;
 
-        service_string = serviceToKey(serviceId)
-        node_string = nodeToKey(self.localId)
-        info = ServiceInfo(
-            service_string,
-            node_string,
-            addresses=getAddresses(),
-            port=port
-        )
-        self.localAds.add(Ad.fromInfo(info))
-        self.zeroconf.register_service(info)
+        register(Service(name: localId, type: _serviceToKey(serviceId), port: port)).then((registration) {
+            zlog(INFO, "registered: $registration");
+            localAds.add(Ad(_serviceToKey(serviceId)!, localId, {registration.service.host!}, port, serviceId, localId)); // Can `host` be null?
+        }).onError((e, st) {
+            zlog(INFO, "registration error: $e @ $st");
+        });
     }
 
     /**
-     * Scans for `time` seconds, and returns matching services.  `[Ad]`<br/>
+     * Scans for `time`, and returns matching services.<br/>
      * If `time` is zero, begin scanning (and DON'T STOP), and return previously discovered services.<br/>
      * If `time` is negative, DON'T scan, and instead just return previously discovered services.<br/>
+     * <br/>
+     * //DUMMY Requires you to provide a serviceId, unlike the python code<br/>
      */
-    Future<Something> scan({String? serviceId, String? nodeId, int time=30}) async { //THINK time in ms?
-        browser = None
-        service_key = serviceToKey(serviceId)
-        node_key = nodeToKey(nodeId)
-        if time >= 0:
-            if serviceId == None:
-                browser = ServiceBrowser(self.zeroconf, f"_http._tcp.local.", self.zcListener)
-            else:
-                browser = ServiceBrowser(self.zeroconf, service_key, self.zcListener)
-            sleep(time)
-            if time > 0:
-                browser.cancel()
-        ads = []
-        for aSet in self.remoteAds.getFilter((service_key, node_key)):
-            ads += list(aSet)
-        return ads;
+    Future<Set<Ad>> scan({required String serviceId, String? nodeId, Duration time=const Duration(seconds: 30)}) async {
+        var service_key = _serviceToKey(serviceId)!;
+        var node_key = _nodeToKey(nodeId);
+
+        if (time.inMicroseconds >= 0) {
+            var discovery = await startDiscovery(service_key);
+            zlog(INFO, "discovery started");
+            discovery.addServiceListener((service, status) {
+                zlog(INFO, "discovery service update: $service $status");
+                switch (status) {
+                    case ServiceStatus.found:
+                        __add_service(service);
+                        break;
+                    case ServiceStatus.lost:
+                        __remove_service(service);
+                        break;
+                }
+            });
+            if (time.inMicroseconds > 0) {
+                await Future.delayed(time);
+                await stopDiscovery(discovery);
+            }
+        }
+
+        var r = remoteAds.getFilter([service_key, node_key]).fold(Set<Ad>(), (a, b) => a..addAll(b));
+        return r;
     }
     /**
-     * Generator version of `scan`.<br/>
+     * Stream version of `scan`.<br/>
+     * If `time` is 0, though, the returned stream will not complete, and instead just keep returning results.<br/>
+     * <br/>
+     * //DITTO //DUMMY Requires you to provide a serviceId, unlike the python code<br/>
      */
-    Future<Something> scanGen({String? serviceId, String? nodeId, int time=30}) async {
-        browser = None
-        service_key = serviceToKey(serviceId)
-        node_key = nodeToKey(nodeId)
+    Stream<Ad> scanGen({required String serviceId, String? nodeId, Duration time=const Duration(seconds: 30)}) async* {
+        var service_key = _serviceToKey(serviceId)!;
+        var node_key = _nodeToKey(nodeId);
 
-        totalAds = set()
+        var totalAds = Set<Ad>();
 
-        for aSet in self.remoteAds.getFilter((service_key, node_key)):
-            for ad in aSet:
-                totalAds.add(ad)
-                yield ad
+        for (var aSet in remoteAds.getFilter([service_key, node_key])) {
+            for (var ad in aSet) {
+                totalAds.add(ad);
+                yield ad;
+            }
+        }
 
-        if time >= 0:
-            lock = threading.Lock()
-            newAds = []
+        if (time.inMicroseconds >= 0) {
+            var newAds = StreamController<Ad>();
 
-            class LocalListener(ServiceListener):
-                def __init__(self, delegate):
-                    self.delegate = delegate
-
-                def update_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-                    info = zc.get_service_info(type_, name)
-                    zlog(VERBOSE, f"0Service {name} updated, service info: {info}")
-                    if info != None:
-                        ad = Ad.fromInfo(info)
-                        lock.acquire()
-                        if ad not in totalAds:
-                            totalAds.add(ad)
-                            newAds.append(ad)
-                        lock.release()
-                    self.delegate.update_service(zc, type_, name)
-
-                def remove_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-                    zlog(VERBOSE, f"0Service {name} removed")
-                    self.delegate.remove_service(zc, type_, name)
-
-                def add_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-                    info = zc.get_service_info(type_, name)
-                    zlog(VERBOSE, f"0Service {name} added, service info: {info}")
-                    if info != None:
-                        ad = Ad.fromInfo(info)
-                        lock.acquire()
-                        if ad not in totalAds:
-                            totalAds.add(ad)
-                            newAds.append(ad)
-                        lock.release()
-                    self.delegate.add_service(zc, type_, name)
-
-            localListener = LocalListener(self.zcListener)
-
-            if serviceId == None:
-                browser = ServiceBrowser(self.zeroconf, f"_http._tcp.local.", localListener)
-            else:
-                browser = ServiceBrowser(self.zeroconf, service_key, localListener)
-
-            endTime = currentSeconds() + time
-            while currentSeconds() < endTime:
-                sleep(0.5)
-                lock.acquire()
-                adCopy = list(newAds)
-                newAds.clear()
-                lock.release()
-                for ad in adCopy:
-                    yield ad
-
-            if time > 0:
-                browser.cancel()
+            var discovery = await startDiscovery(service_key);
+            zlog(INFO, "discovery started");
+            discovery.addServiceListener((service, status) {
+                zlog(INFO, "discovery service update: $service $status");
+                switch (status) {
+                    case ServiceStatus.found:
+                        var ad = Ad.fromInfo(service);
+                        if (!totalAds.contains(ad)) {
+                            totalAds.add(ad);
+                            newAds.add(ad);
+                        }
+                        __add_service(service);
+                        break;
+                    case ServiceStatus.lost:
+                        __remove_service(service);
+                        break;
+                }
+            });
+            if (time.inMicroseconds > 0) {
+                Future.delayed(time).then((_) async {
+                    await stopDiscovery(discovery);
+                    await newAds.close();
+                });
+            }
+            yield* newAds.stream;
+        }
     }
 
     /**
@@ -335,40 +356,44 @@ class ZeroConnect {
      * one that succeeds.<br/>
      * Note that this may leave extraneous dead connections in `outgoneConnections`!<br/>
      * Returns `(sock, Ad)`, or None if the timeout expires first.<br/>
-     * If timeout == -1, don't scan, only use cached services.<br/>
+     * If timeout < 0, don't scan, only use cached services.<br/>
+     * <br/>
+     * //DITTO //DUMMY Requires you to provide a serviceId, unlike the python code<br/>
      */
-    Future<Something> connectToFirst({String? serviceId, String? nodeId, String localServiceId="", SocketMode mode=SocketMode.MESSAGES, int timeout=30}) async { //THINK Timeout in ms?
-        if serviceId == None and nodeId == None:
-            raise Exception("Must have at least one id")
+    Future<MessageSocket?> connectToFirst({required String serviceId, String? nodeId, String localServiceId="", SocketMode mode=SocketMode.MESSAGES, Duration timeout=const Duration(seconds: 30)}) async { //THINK Timeout in ms?
+        // if serviceId == None and nodeId == None:
+        //     raise Exception("Must have at least one id")
 
-        lock = threading.Lock()
-        sockSet = threading.Event()
-        sock = None
+        var sockSet = WaitGroup()..add(1);
+        bool done = false;
+        MessageSocket? sock = null;
 
-        def tryConnect(ad):
-            nonlocal sock
-            localsock = self.connect(ad, localServiceId, mode)
-            if localsock == None:
-                return
-            lock.acquire()
-            try:
-                if sock == None:
-                    sock = localsock
-                    sockSet.set()
-                else:
-                    localsock.close()
-            finally:
-                lock.release()
+        Future<void> tryConnect(ad) async {
+            var localsock = await connect(ad, localServiceId: localServiceId, mode: mode);
+            if (localsock == null) {
+                return;
+            }
+            if (!done) {
+                sock = localsock;
+                sockSet.done();
+                done = true;
+            } else {
+                localsock.close();
+            }
+        }
 
-        def startScanning():
-            for ad in self.scanGen(serviceId, nodeId, timeout):
-                threading.Thread(target=tryConnect, args=(ad,), daemon=True).start()
+        unawaited(Future(() async {
+            await for (var ad in scanGen(serviceId: serviceId, nodeId: nodeId, time: timeout)) {
+                unawaited(tryConnect(ad));
+            }
+        }));
 
-        threading.Thread(target=startScanning, args=(), daemon=True).start() # Otherwise it blocks until timeout regardless of success
+        await sockSet.wait().timeout(timeout, onTimeout: () async {
+            zlog(INFO, "connectToFirst timed out");
+            done = true;
+        }); // Note that this doesn't wait for the threads to finish.  I *think* that's ok.
 
-        sockSet.wait(timeout) # Note that this doesn't wait for the threads to finish.  I *think* that's ok.
-
-        return sock
+        return sock;
     }
 
     /**
@@ -380,77 +405,88 @@ class ZeroConnect {
      * <br/>
      * (localServiceId is a nicety, to optionally tell the server what service you're associated with.)<br/>
      */
-    Future<Something> connect(Ad ad, {String localServiceId="", SocketMode mode=SocketMode.MESSAGES}) async {
-        lock = threading.Lock()
-        sockSet = threading.Event()
-        sock = None
+    Future<MessageSocket?> connect(Ad ad, {String localServiceId="", SocketMode mode=SocketMode.MESSAGES}) async {
+        var lock = Mutex();
+        var sockSet = WaitGroup()..add(1);
+        MessageSocket? sock = null;
 
-        def tryConnect(addr, port):
-            nonlocal sock
-            localsock = connectOutbound(addr, port)
-            if localsock == None:
-                return
-            lock.acquire()
-            shouldClose = False
-            try:
-                messageSock = MessageSocket(localsock)
-                if sock == None:
-                    messageSock.sendMsg(self.localId) # It appears both sides can send a message at the same time.  Different comms may give different results, though.
-                    messageSock.sendMsg(localServiceId)
-                    clientNodeId = messageSock.recvMsg().decode("utf-8")
-                    clientServiceId = messageSock.recvMsg().decode("utf-8") # Note that this might be empty
-                    if not clientNodeId and not clientServiceId:
-                        # Connection was canceled (or was invalid)
-                        zlog(INFO, f"connection canceled from {addr}")
-                        messageSock.close()
-                    else:
-                        # The client might report different IDs than its service - is that problematic?
-                        # ...Actually, clients don't need to have an advertised service in the first place.  So, no.
-                        if (clientNodeId, clientServiceId) not in self.outgoneConnections:
-                            self.outgoneConnections[(clientNodeId, clientServiceId)] = []
-                        self.outgoneConnections[(clientNodeId, clientServiceId)].append(messageSock)
-                        if mode == SocketMode.Raw:
-                            sock = localsock
-                        elif mode == SocketMode.Messages:
-                            sock = messageSock
-                        sockSet.set()
-                else:
-                    zlog(INFO, f"{addr} {port} Beaten to the punch; closing outgoing connection")
-                    messageSock.sendMsg("")
-                    messageSock.sendMsg("")
-                    shouldClose = True
-            except Exception:
-                zerr(WARN, f"An error occured in connection-forming code")
-                if WARN <= getLogLevel():
-                    print("raising")
-                    raise
-                else:
-                    return
-            finally:
-                lock.release()
-                if shouldClose:
-                    sleep(0.1) # If I close immediately after sending, the messages don't get through before the close.  Sigh.
-                    messageSock.close()
+        Future<void> tryConnect(String addr, int port) async {
+            var localsock = await connectOutbound(addr, port);
+            if (localsock == null) {
+                return;
+            }
+            await lock.acquire();
+            var shouldClose = false;
+            MessageSocket? messageSock;
+            try {
+                messageSock = MessageSocket(localsock);
+                if (sock == null) {
+                    await messageSock.sendString(localId); // It appears both sides can send a message at the same time.  Different comms may give different results, though.
+                    await messageSock.sendString(localServiceId);
+                    var clientNodeId = await messageSock.recvString();
+                    var clientServiceId = await messageSock.recvString(); // Note that this might be empty
+                    if ((clientNodeId == null || clientServiceId == null) || (clientNodeId.isEmpty && clientServiceId.isEmpty)) {
+                        // Connection was canceled (or was invalid)
+                        zlog(INFO, "connection canceled from $addr");
+                        messageSock.close();
+                    } else {
+                        // The client might report different IDs than its service - is that problematic?
+                        // ...Actually, clients don't need to have an advertised service in the first place.  So, no.
+                        if (outgoneConnections[[clientNodeId, clientServiceId]].isEmpty) {
+                            outgoneConnections[[clientNodeId, clientServiceId]] = [];
+                        }
+                        outgoneConnections.getExact([clientNodeId, clientServiceId])!.add(messageSock);
+                        switch (mode) {
+                            case SocketMode.RAW:
+                                sock = localsock;
+                                break;
+                            case SocketMode.MESSAGES:
+                                sock = messageSock;
+                                break;
+                        }
+                        sockSet.done();
+                    }
+                } else {
+                    zlog(INFO, "$addr $port Beaten to the punch; closing outgoing connection");
+                    await messageSock.sendString("");
+                    await messageSock.sendString("");
+                    shouldClose = true;
+                }
+            } catch (e) {
+                zerr(WARN, "An error occured in connection-forming code: $e");
+                return;
+            } finally {
+                lock.release();
+                if (shouldClose) {
+                    Future.delayed(const Duration(milliseconds: 100)); // If I close immediately after sending, the messages don't get through before the close.  (At least in python, probably here, too.)  Sigh.
+                    await messageSock?.close();
+                }
+            }
+        }
 
-        for addr in ad.addresses:
-            threading.Thread(target=tryConnect, args=(addr, ad.port), daemon=True).start()
+        for (var addr in ad.addresses) {
+            unawaited(tryConnect(addr, ad.port));
+        }
 
-        sockSet.wait() # Note that this doesn't wait for the threads to finish.  I *think* that's ok.
+        sockSet.wait(); // Note that this doesn't wait for the threads to finish.
 
-        return sock
+        return sock;
     }
 
     /**
      * Send message to all existing connections (matching service/node filter).<br/>
      */
-    Future<Something> broadcast(Something message, {String? serviceId, String? nodeId}) async {
-        for connections in (self.incameConnections[(serviceId, nodeId)] + self.outgoneConnections[(serviceId, nodeId)]):
-            for connection in list(connections):
-                try:
-                    connection.sendMsg(message)
-                except:
-                    zerr(WARN, f"A connection errored; removing: {connection}")
-                    connections.remove(connection)
+    Future<void> broadcast(Uint8List message, {String? serviceId, String? nodeId}) async { //NEXT broadcastString
+        for (var connections in (incameConnections.getFilter([serviceId, nodeId]) + outgoneConnections.getFilter([serviceId, nodeId]))) {
+            for (var connection in connections) {
+                try {
+                    connection.sendMsg(message);
+                } catch (e) {
+                    zerr(WARN, "A connection errored; removing: $connection");
+                    connections.remove(connection);
+                }
+            }
+        }
     }
 
     /**
@@ -458,13 +494,15 @@ class ZeroConnect {
      * If you need to distinguish between connections that came in and connections that went out, see
      * `incameConnections` and `outgoneConnections`.<br/>
      */
-    Map<Something> getConnections() {
-        cons = {}
-        cons.update(self.incameConnections)
-        for key in self.outgoneConnections:
-            if key not in cons:
-                cons[key] = []
-            cons[key] += self.outgoneConnections.getExact(key)
+    Map<List<String>, List<MessageSocket>> getConnections() {
+        Map<List<String>, List<MessageSocket>> cons = {};
+        cons.addEntries(incameConnections.entries());
+        for (var e in outgoneConnections.entries()) {
+            if (!cons.containsKey(e.key)) {
+                cons[e.key] = [];
+            }
+            cons[e.key]!.addAll(e.value);
+        }
         return cons;
     }
 

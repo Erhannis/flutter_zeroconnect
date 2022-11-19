@@ -1,6 +1,7 @@
 // Derived from http://stupidpythonideas.blogspot.com/2013/05/sockets-are-byte-streams-not-message.html
 // and then translated from https://github.com/Erhannis/zeroconnect/blob/master/zeroconnect/message_socket.py
 import 'dart:async';
+import 'dart:convert';
 import 'dart:developer';
 import 'dart:io';
 import 'dart:typed_data';
@@ -158,6 +159,10 @@ class MessageSocket {
         } finally {
             _recvLock.release();
         }
+    }
+
+    Future<String?> recvString({bool? allowMalformed = true}) async { //THINK Should allowMalformed?
+        return utf8.decode((await recvMsg())!, allowMalformed: allowMalformed);
     }
 
     Future<void> close() async {

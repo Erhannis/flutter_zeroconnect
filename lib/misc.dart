@@ -40,3 +40,15 @@ extension SWLap on Stopwatch {
     return e;
   }
 }
+
+class Pair<A, B> {
+  A a;
+  B b;
+
+  Pair(this.a, this.b);
+
+  @override
+  String toString() {
+    return "Pair($a, $b)";
+  }
+}
