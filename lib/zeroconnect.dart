@@ -240,7 +240,9 @@ class ZeroConnect {
         Nsd.register(Service(name: localId, type: _serviceToKey(serviceId), port: port)).then((registration) {
             zlog(INFO, "registered: $registration");
             registrations.add(registration);
-            localAds.add(Ad(_serviceToKey(serviceId)!, localId, {registration.service.host!}, port, serviceId, localId)); // Can `host` be null?
+            //BCRASH On my Android 6.0.1 phone, host is null.  addresses is empty, too.
+            //CHECK Under what other conditions is host null?
+            localAds.add(Ad(_serviceToKey(serviceId)!, localId, {registration.service.host!}, port, serviceId, localId));
         }).onError((e, st) {
             zlog(INFO, "registration error: $e @ $st");
         });
