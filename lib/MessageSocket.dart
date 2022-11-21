@@ -116,9 +116,10 @@ class MessageSocket {
     }
 
     /**
-     * Send a message.
-     * `data` should be a list of bytes, or a string (which will then be encoded with utf-8.)
-     * Throws exception on socket failure.
+     * Send a message.<br/>
+     * `data` should be a list of bytes, or a string (which will then be encoded with utf-8.)<br/>
+     * Throws exception on socket failure.<br/>
+     * //DUMMY Doesn't throw.  Just keeps going.  Should probably fix that.<br/>
      */
     Future<void> sendMsg(Uint8List data) async {
         await _sendLock.acquire();
@@ -126,6 +127,7 @@ class MessageSocket {
             _sock.add(uint64BigEndianBytes(data.length));
             // Send inverse, for validation? ...I THINK we can trust TCP to guarantee ordering and whatnot
             _sock.add(data);
+            await _sock.flush();
         } finally {
             _sendLock.release();
         }
@@ -162,7 +164,11 @@ class MessageSocket {
     }
 
     Future<String?> recvString({bool? allowMalformed = true}) async { //THINK Should allowMalformed?
-        return utf8.decode((await recvMsg())!, allowMalformed: allowMalformed);
+        var msg = await recvMsg();
+        if (msg == null) {
+            return null;
+        }
+        return utf8.decode(msg, allowMalformed: allowMalformed);
     }
 
     Future<void> close() async {
