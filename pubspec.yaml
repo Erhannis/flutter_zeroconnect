@@ -1,7 +1,7 @@
 name: zeroconnect
-description: Uses MDNS to automagically create data streams over the local network.
-version: 0.0.1
-homepage:
+description: Uses NSD to automagically create data streams over the local network.
+version: 0.9.0
+homepage: https://github.com/erhannis/flutter_zeroconnect
 
 environment:
   sdk: '>=2.18.1 <3.0.0'

@@ -19,14 +19,14 @@ import 'misc.dart';
 
 // Translated from https://github.com/Erhannis/zeroconnect/blob/master/zeroconnect/zeroconnect.py
 
-var ZC_LOGGING = 10; // Higher is noisier, up to, like, 10
+var ZC_LOGGING = 1; // Higher is noisier, up to, like, 10
 const ERROR = 0;
 const WARN = 1;
 const INFO = 2;
 const VERBOSE = 3;
 const DEBUG = 4;
 
-void zlog(int level, String msg) {
+void zlog(int level, String msg) { //THINK Perhaps these should not be externally visible.
     if (level <= ZC_LOGGING) {
         log(msg);
     }
@@ -222,7 +222,7 @@ class ZeroConnect {
      * Advertise a service, and send new connections to `callback`.<br/>
      * Apparently `serviceId` must match regex [a-zA-Z0-9-]{1,15} .  ...Or you can import 'package:nsd/nsd.dart' and call disableServiceTypeValidation(true), first.
      * No guarantees that won't have weird edge cases or platform-dependent incompatibilities.<br/>
-     * `callback` is called on its own (daemon) thread.  If you want to loop forever, go for it.<br/>
+     * `callback` is called on its own (daemon) thread.  If you want to loop forever, go for it.  `advertise` returns after registration with NSD is complete.<br/>
      */
     Future<void> advertise({required void Function(MessageSocket sock, String nodeId, String serviceId) callback, required String serviceId, int port=0, InternetAddress? host}) async { //THINK Have an ugly default serviceId?
         return _advertise(callback: callback, serviceId: serviceId, port: port, host: host, mode: SocketMode.MESSAGES);
@@ -526,7 +526,7 @@ class ZeroConnect {
         for (var connections in (incameConnections.getFilter([serviceId, nodeId]) + outgoneConnections.getFilter([serviceId, nodeId]))) {
             await Future.wait(connections.map((c) async {
                 try {
-                    await c.sendBytes(message);
+                    await c.sendBytes(message); //THINK I think this may not actually error when the connection is broken
                 } catch (e) {
                     zerr(WARN, "A connection errored; removing: $c");
                     connections.remove(c);

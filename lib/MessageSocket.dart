@@ -10,6 +10,7 @@ import 'package:sync/sync.dart';
 
 import 'csp/Channel.dart';
 import 'misc.dart';
+import 'zeroconnect.dart';
 
 Uint8List uint64BigEndianBytes(int value) => Uint8List(8)..buffer.asByteData().setUint64(0, value, Endian.big);
 int bigEndianBytesUint64(Uint8List bytes) => bytes.buffer.asByteData().getUint64(0, Endian.big);
@@ -21,14 +22,14 @@ int bigEndianBytesUint64(Uint8List bytes) => bytes.buffer.asByteData().getUint64
     a single channel.
  */
 class MessageSocket {
-    Socket _sock;
+    Socket sock;
     Mutex _sendLock;
     Mutex _recvLock;
 
     late final ChannelIn<Uint8List?> _rxIn;
     late final ChannelOut<int> _recvCountOut;
 
-    MessageSocket(this._sock): this._sendLock = Mutex(), this._recvLock = Mutex() {
+    MessageSocket(this.sock): this._sendLock = Mutex(), this._recvLock = Mutex() {
         var _rxChannel = Channel<Uint8List?>();
         this._rxIn = _rxChannel.getIn();
         var rxOut = _rxChannel.getOut();
@@ -63,7 +64,7 @@ class MessageSocket {
                             requested = null;
                             continue; //TODO Maybe just return?
                         }
-                        //log("MS2 ${sw.lap()} rx request");
+                        //zlog(DEBUG, "MS2 ${sw.lap()} rx request");
                     }
                     if (requested == 0) {
                         await rxOut.write(Uint8List(0));
@@ -82,11 +83,11 @@ class MessageSocket {
                             accumulated -= requested!;
                         }
                         requested = null;
-                        //log("MS2 ${sw.lap()} collected response");
+                        //zlog(DEBUG, "MS2 ${sw.lap()} collected response");
                         var response = Uint8List.fromList(bb.takeBytes());
-                        //log("MS2 ${sw.lap()} built response");
+                        //zlog(DEBUG, "MS2 ${sw.lap()} built response");
                         await rxOut.write(response); //TODO This seems like a lot of conversions
-                        //log("MS2 ${sw.lap()} tx data");
+                        //zlog(DEBUG, "MS2 ${sw.lap()} tx data");
                     } else {
                         await sleep(10);
                         if (broken) {
@@ -95,21 +96,21 @@ class MessageSocket {
                             continue; //TODO Maybe just return?
                         }
                     }
-                    //log("MS2 ${sw_big2.lap()} send total");
+                    //zlog(DEBUG, "MS2 ${sw_big2.lap()} send total");
                 }
             }));
 
             try {
-                await for (var data in _sock) { //TODO I'm pretty sure data will still accumulate in the Socket; I wish I could backpressure it
+                await for (var data in sock) { //TODO I'm pretty sure data will still accumulate in the Socket; I wish I could backpressure it
                     sw_big1.reset();
-                    //log("MS1 ${sw.lap()} rx data");
+                    //zlog(DEBUG, "MS1 ${sw.lap()} rx data");
                     pending.add(data);
                     accumulated += data.length;
-                    //log("MS1 ${sw.lap()} added data - acc $accumulated");
-                    //log("MS1 ${sw_big1.lap()} read total");
+                    //zlog(DEBUG, "MS1 ${sw.lap()} added data - acc $accumulated");
+                    //zlog(DEBUG, "MS1 ${sw_big1.lap()} read total");
                 }
             } catch (e) {
-                log("Connection presumably closed: $e");
+                zlog(INFO, "Connection presumably closed: $e");
                 broken = true;
             }
         }));
@@ -124,10 +125,10 @@ class MessageSocket {
     Future<void> sendBytes(Uint8List data) async {
         await _sendLock.acquire();
         try {
-            _sock.add(uint64BigEndianBytes(data.length));
+            sock.add(uint64BigEndianBytes(data.length));
             // Send inverse, for validation? ...I THINK we can trust TCP to guarantee ordering and whatnot
-            _sock.add(data);
-            await _sock.flush();
+            sock.add(data);
+            await sock.flush();
         } finally {
             _sendLock.release();
         }
@@ -143,7 +144,7 @@ class MessageSocket {
     /**
      * Result of [] simply means an empty message; result of null implies some kind of failure; likely a disconnect.
      */
-    Future<Uint8List?> recvBytes() async {
+    Future<Uint8List?> recvBytes() async { //CHECK How does this handle disconnection?
         await _recvLock.acquire();
         try {
             await _recvCountOut.write(8);
@@ -173,7 +174,7 @@ class MessageSocket {
 
     Future<void> close() async {
         try {
-            await _sock.close();
+            await sock.close();
         } catch (e) {
             // Nothing
         }
