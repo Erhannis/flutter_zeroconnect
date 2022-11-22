@@ -6,7 +6,6 @@ import 'dart:developer';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:collection/collection.dart';
 import 'package:sync/sync.dart';
 import 'package:sync/waitgroup.dart';
 import 'package:uuid/uuid.dart';
