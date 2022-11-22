@@ -83,7 +83,7 @@ const SERVICE_ID = "YOURSERVICEID";
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized(); // This is not needed if the usual `runApp` has already been called
-  var zc = ZeroConnect("SERVER_ID");
+  var zc = ZeroConnect(localId: "SERVER_ID");
   await zc.advertise(serviceId: SERVICE_ID, callback: (messageSock, nodeId, serviceId) async {
     print("got message connection from $nodeId");
     // If you also want to spontaneously send messages, pass the socket to e.g. another thread.
@@ -125,12 +125,12 @@ import 'package:zeroconnect/zeroconnect.dart';
 const SERVICE_ID = "YOURSERVICEID";
 
 Future<void> main() async {
-  var zc = ZeroConnect("CLIENT_ID"); // Technically the nodeId is optional; it'll assign you a random UUID
+  var zc = ZeroConnect(localId: "CLIENT_ID"); // Technically the nodeId is optional; it'll assign you a random UUID
   
   var ads = await zc.scan(serviceId: SERVICE_ID, time: const Duration(seconds: 5));
   // OR: var ads = await zc.scan(serviceId: SERVICE_ID, nodeId: NODE_ID);
   // An `Ad` contains a `serviceId` and `nodeId` etc.; see `Ad` for details
-  var messageSock = await zc.connect(ads[0]); // See also (ZeroConnect).connectRaw
+  var messageSock = await zc.connect(ads.first); // See also (ZeroConnect).connectRaw
   // OR: var messageSock = await zc.connectToFirst(serviceId: SERVICE_ID);
   // OR: var messageSock = await zc.connectToFirst(serviceId: SERVICE_ID, nodeId: NODE_ID, time: const Duration(seconds: 10));
   // Perhaps one day you will be able to specify a nodeId alone, but I had some problems when doing that I haven't fixed, yet.
@@ -139,7 +139,7 @@ Future<void> main() async {
   await messageSock?.sendString("save msg:");
   await messageSock?.sendString("i love you");
   await messageSock?.sendString("marco");
-  print("rx: ${await messageSock.recvString()}");
+  print("rx: ${await messageSock?.recvString()}");
 
   // ...
 
@@ -195,3 +195,4 @@ connect to all, forever?
     connection callback
 maybe some automated tests?
 .advertiseSingle to get one connection?  for quick stuff?
+I don't think either direction detects disconnects, for some reason
