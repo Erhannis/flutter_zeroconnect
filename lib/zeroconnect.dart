@@ -64,7 +64,7 @@ String? _nodeToKey(String? nodeId) {
     if (nodeId == null) {
         return null;
     } else {
-        return "$nodeId"; //CHECK //DITTO
+        return "$nodeId";
     }
 }
 
@@ -82,17 +82,21 @@ enum SocketMode {
 }
 
 /**
- * Represents a node's zeroconf advertisement.<br/>
+ * Represents a node's nsd advertisement.<br/>
  */
 class Ad { // Man, this feels like LanCopy all over
     /**
      * Like, the zc.get_service_info info<br/>
      */
     static Ad fromInfo(Service info) {
-        //CHECK Maybe don't throw on nulls?
         final type = info.type!;
         final name = info.name!;
-        final addresses = {info.host!}; //THINK Maybe ip addresses //tuple([socket.inet_ntoa(addr) for addr in info.addresses]);
+        var addresses = <String>{};
+        if (info.host != null) {
+            addresses.add(info.host!);
+        } else {
+            addresses.addAll((info.addresses ?? <InternetAddress>[]).map((e) => e.address));
+        }
         final port = info.port!;
         final serviceId = _typeToService(type);
         final nodeId = _nameToNode(name);
@@ -122,39 +126,51 @@ class Ad { // Man, this feels like LanCopy all over
         return other is Ad
             && this.type == other.type
             && this.name == other.name
-            && (const SetEquality().equals)(this.addresses, other.addresses)
+            //&& (const SetEquality().equals)(this.addresses, other.addresses) // Sortof a hack.  These cause problems on Android, something about host not being available, so it uses addresses, but only on one side of the exchange?  //RAINY Should probably look more closely at that.
             && this.port == other.port
             && this.serviceId == other.serviceId
             && this.nodeId == other.nodeId;
     }
 
-    int get hashCode => Object.hash(type, name, (const SetEquality().hash)(addresses), port, serviceId, nodeId);
+    int get hashCode => Object.hash(
+        type,
+        name,
+        //(const SetEquality().hash)(addresses), //DITTO see above
+        port,
+        serviceId,
+        nodeId);
 }
 
 //TODO Note: I'm not sure there aren't any race conditions in this.  I've been writing in Dart's strict threading model for months, and it took me a while to remember that race conditions exist
 /**
- * Uses zeroconf to automatically connect devices on a network.<br/>
+ * Uses nsd to automatically connect devices on a network.<br/>
  * Here's some basic examples; check the README or source code for further info.
  *
- * Service:    //DUMMY Translate to dart
- * ```python
- * from zeroconnect import ZeroConnect
+ * Service:
+ * ```dart
+ * import 'package:zeroconnect/zeroconnect.dart';
  *
- * def rxMessageConnection(messageSock, nodeId, serviceId):
- * print(f"got message connection from {nodeId}")
- * data = messageSock.recvMsg()
- * print(data)
- * messageSock.sendMsg(b"Hello from server")
- *
- * ZeroConnect().advertise(rxMessageConnection, "YOUR_SERVICE_ID_HERE")
+ * Future<void> main() async {
+ *   WidgetsFlutterBinding.ensureInitialized(); // This is not needed if the usual `runApp` has already been called
+ *   await ZeroConnect().advertise(serviceId: "YOURSERVICEID", callback: (messageSock, nodeId, serviceId) async {
+ *     print("got message connection from $nodeId");
+ *     var str = await messageSock.recvString();
+ *     print(str);
+ *     await messageSock.sendString("Hello from server");
+ *   });
+ * }
  * ```
  *
- * Client:    //DITTO
- * ```python
- * from zeroconnect import ZeroConnect
- * messageSock = ZeroConnect().connectToFirst("YOUR_SERVICE_ID_HERE")
- * messageSock.sendMsg(b"Test message")
- * data = messageSock.recvMsg()
+ * Client:
+ * ```dart
+ * import 'package:zeroconnect/zeroconnect.dart';
+ *
+ * Future<void> main() async {
+ *   var messageSock = await ZeroConnect().connectToFirst(serviceId: "YOURSERVICEID");
+ *   await messageSock?.sendString("Test message");
+ *   var str = messageSock?.recvBytes();
+ *   print(str);
+ * }
  * ```
  */
 class ZeroConnect {
@@ -178,6 +194,7 @@ class ZeroConnect {
                 ras = {};
                 remoteAds[ad.getKey()] = ras;
             }
+            ras.remove(ad); //SHAME Hacky; Ad ignores `addresses` for compatibility, but that's bad here.
             ras.add(ad); // Not even sure this is correct.  Should I remove existing old records?  CAN I?
         }
     }
@@ -196,15 +213,16 @@ class ZeroConnect {
                 ras = {};
                 remoteAds[ad.getKey()] = ras;
             }
-            ras.add(ad); // Not even sure this is correct.  Should I remove existing old records?  CAN I?
+            ras.remove(ad); //DITTO //SHAME Hacky; Ad ignores `addresses` for compatibility, but that's bad here.
+            ras.add(ad); //DITTO Not even sure this is correct.  Should I remove existing old records?  CAN I?
         }
     }
 
     /**
      * Advertise a service, and send new connections to `callback`.<br/>
+     * Apparently `serviceId` must match regex [a-zA-Z0-9-]{1,15} .  ...Or you can import 'package:nsd/nsd.dart' and call disableServiceTypeValidation(true), first.
+     * No guarantees that won't have weird edge cases or platform-dependent incompatibilities.<br/>
      * `callback` is called on its own (daemon) thread.  If you want to loop forever, go for it.<br/>
-     * Be warned that you should only have one adveristement running (locally?) with a given name - zeroconf
-     * throws an exception otherwise.  However, if you create another ZeroConnect with a different name, it works fine.<br/>
      */
     Future<void> advertise({required void Function(MessageSocket sock, String nodeId, String serviceId) callback, required String serviceId, int port=0, InternetAddress? host}) async { //THINK Have an ugly default serviceId?
         return _advertise(callback: callback, serviceId: serviceId, port: port, host: host, mode: SocketMode.MESSAGES);
@@ -227,7 +245,7 @@ class ZeroConnect {
             var clientServiceId = await messageSock.recvString(); // Note that this might be empty
             if ((clientNodeId == null || clientServiceId == null) || (clientNodeId.isEmpty && clientServiceId.isEmpty)) {
                 // Connection was canceled (or was invalid)
-                zlog(INFO, "connection canceled from $sock"); //CHECK Check for any e.g. {addr} instead of $addr
+                zlog(INFO, "connection canceled from $sock");
                 await messageSock.close();
                 return;
             }
@@ -244,15 +262,14 @@ class ZeroConnect {
             }
         }
 
-        final ssock = await ServerSocket.bind(host, port); //THINK Multiple interfaces?
+        //SECURITY Should probably permit TLS etc.
+        final ssock = await ServerSocket.bind(host, port);
         var lsub = ssock.listen(socketCallback); //LEAK This never exits, there's no way to cancel the advertisement
         port = ssock.port;
 
         await Nsd.register(Service(name: localId, type: _serviceToKey(serviceId), port: port)).then((registration) async {
             zlog(INFO, "registered: $registration");
             registrations.add(registration);
-            //BCRASH On my Android 6.0.1 phone, host is null.  addresses is empty, too.
-            //CHECK Under what other conditions is host null?
             Set<String> addresses = {};
             var host = registration.service.host;
             if (host != null) {
@@ -293,11 +310,12 @@ class ZeroConnect {
             if (time.inMicroseconds > 0) {
                 await Future.delayed(time);
                 await Nsd.stopDiscovery(discovery);
+                zlog(INFO, "discovery stopped");
                 discoveries.remove(discovery);
             }
         }
 
-        var r = remoteAds.getFilter([service_key, node_key]).fold(Set<Ad>(), (a, b) => a..addAll(b));
+        var r = remoteAds.getFilter([service_key, node_key]).fold(Set<Ad>(), (a, b) => a..addAll(b)); //DITTO //SHAME Re: removeAll - hacky; Ad ignores `addresses` for compatibility, but that's bad here.
         return r;
     }
     /**
@@ -355,11 +373,11 @@ class ZeroConnect {
         }
     }
 
-    Future<MessageSocket?> connectToFirst({required String serviceId, String? nodeId, String localServiceId="", Duration timeout=const Duration(seconds: 30)}) async { //THINK Timeout in ms?
+    Future<MessageSocket?> connectToFirst({required String serviceId, String? nodeId, String localServiceId="", Duration timeout=const Duration(seconds: 30)}) async {
         return await _connectToFirst(serviceId: serviceId, nodeId: nodeId, localServiceId: localServiceId, mode: SocketMode.MESSAGES, timeout: timeout);
     }
 
-    Future<Socket?> connectToFirstRaw({required String serviceId, String? nodeId, String localServiceId="", Duration timeout=const Duration(seconds: 30)}) async { //THINK Timeout in ms?
+    Future<Socket?> connectToFirstRaw({required String serviceId, String? nodeId, String localServiceId="", Duration timeout=const Duration(seconds: 30)}) async {
         return await _connectToFirst(serviceId: serviceId, nodeId: nodeId, localServiceId: localServiceId, mode: SocketMode.RAW, timeout: timeout);
     }
 
@@ -372,7 +390,7 @@ class ZeroConnect {
      * <br/>
      * //DITTO //DUMMY Requires you to provide a serviceId, unlike the python code<br/>
      */
-    Future<dynamic?> _connectToFirst({required String serviceId, String? nodeId, String localServiceId="", required SocketMode mode, Duration timeout=const Duration(seconds: 30)}) async { //THINK Timeout in ms?
+    Future<dynamic?> _connectToFirst({required String serviceId, String? nodeId, String localServiceId="", required SocketMode mode, Duration timeout=const Duration(seconds: 30)}) async {
         // if serviceId == None and nodeId == None:
         //     raise Exception("Must have at least one id")
 
@@ -504,18 +522,24 @@ class ZeroConnect {
     /**
      * Send message to all existing connections (matching service/node filter).<br/>
      */
-    Future<void> broadcast(Uint8List message, {String? serviceId, String? nodeId}) async { //NEXT broadcastString
+    Future<void> broadcastBytes(Uint8List message, {String? serviceId, String? nodeId}) async {
         for (var connections in (incameConnections.getFilter([serviceId, nodeId]) + outgoneConnections.getFilter([serviceId, nodeId]))) {
-            for (var connection in connections) {
+            await Future.wait(connections.map((c) async {
                 try {
-                    //CHECK Shouldn't block?
-                    await connection.sendMsg(message);
+                    await c.sendBytes(message);
                 } catch (e) {
-                    zerr(WARN, "A connection errored; removing: $connection");
-                    connections.remove(connection);
+                    zerr(WARN, "A connection errored; removing: $c");
+                    connections.remove(c);
                 }
-            }
+            }).toList());
         }
+    }
+
+    /**
+     * Send message to all existing connections (matching service/node filter).<br/>
+     */
+    Future<void> broadcastString(String message, {String? serviceId, String? nodeId}) async {
+        broadcastBytes(Uint8List.fromList(message.codeUnits), serviceId: serviceId, nodeId: nodeId);
     }
 
     /**
@@ -536,7 +560,8 @@ class ZeroConnect {
     }
 
     /**
-     * Unregisters and closes zeroconf, and closes all connections.<br/>
+     * Unregisters and closes nsd, and closes all connections.<br/>
+     * //DUMMY See the LEAK on ssock.listen
      */
     Future<void> close() async {
         for (var reg in registrations) {
@@ -568,5 +593,3 @@ class ZeroConnect {
         outgoneConnections.clear();
     }
 }
-
-//RAINY Replace all references to "zeroconf" with "mdns".

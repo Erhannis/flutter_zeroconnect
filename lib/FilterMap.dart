@@ -36,9 +36,6 @@ class FilterMap<K, V> { //THINK extend/implement Map?  [] doesn't return V, but 
         return _map.length;
     }
 
-    /**
-     * Can be used to retrieve entries that have None in them.<br/> //CHECK Examine None thing
-     */
     V? getExact(List<K> key) {
         return _map[key];
     }
@@ -49,7 +46,7 @@ class FilterMap<K, V> { //THINK extend/implement Map?  [] doesn't return V, but 
             var k = e.key;
             var v = e.value;
             for (var i = 0; i < size; i++) {
-                if (key[i] != null && k[i] != key[i]) { //CHECK
+                if (key[i] != null && k[i] != key[i]) {
                     // This key doesn't match
                     continue outer;
                 }
@@ -117,7 +114,7 @@ class FilterMap<K, V> { //THINK extend/implement Map?  [] doesn't return V, but 
             var k = e.key;
             var v = e.value;
             for (var i = 0; i < size; i++) {
-                if (key[i] != null && k[i] != key[i]) { //CHECK
+                if (key[i] != null && k[i] != key[i]) {
                     // This key doesn't match
                     continue outer;
                 }

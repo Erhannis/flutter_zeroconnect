@@ -121,7 +121,7 @@ class MessageSocket {
      * Throws exception on socket failure.<br/>
      * //DUMMY Doesn't throw.  Just keeps going.  Should probably fix that.<br/>
      */
-    Future<void> sendMsg(Uint8List data) async {
+    Future<void> sendBytes(Uint8List data) async {
         await _sendLock.acquire();
         try {
             _sock.add(uint64BigEndianBytes(data.length));
@@ -134,16 +134,16 @@ class MessageSocket {
     }
 
     /**
-     * See `sendMsg`
+     * See `sendBytes`
      */
     Future<void> sendString(String s) async {
-        await sendMsg(Uint8List.fromList(s.codeUnits)); //TODO UTF-16???
+        await sendBytes(Uint8List.fromList(s.codeUnits)); //TODO UTF-16???
     }
 
     /**
      * Result of [] simply means an empty message; result of null implies some kind of failure; likely a disconnect.
      */
-    Future<Uint8List?> recvMsg() async {
+    Future<Uint8List?> recvBytes() async {
         await _recvLock.acquire();
         try {
             await _recvCountOut.write(8);
@@ -164,7 +164,7 @@ class MessageSocket {
     }
 
     Future<String?> recvString({bool? allowMalformed = true}) async { //THINK Should allowMalformed?
-        var msg = await recvMsg();
+        var msg = await recvBytes();
         if (msg == null) {
             return null;
         }
