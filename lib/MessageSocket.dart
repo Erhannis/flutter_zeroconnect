@@ -12,14 +12,14 @@ import 'csp/Channel.dart';
 import 'misc.dart';
 import 'zeroconnect.dart';
 
-Uint8List uint64BigEndianBytes(int value) => Uint8List(8)..buffer.asByteData().setUint64(0, value, Endian.big);
-int bigEndianBytesUint64(Uint8List bytes) => bytes.buffer.asByteData().getUint64(0, Endian.big);
+Uint8List int64BigEndianBytes(int value) => Uint8List(8)..buffer.asByteData().setInt64(0, value, Endian.big);
+int bigEndianBytesInt64(Uint8List bytes) => bytes.buffer.asByteData().getInt64(0, Endian.big);
 
 /**
-    Packages data from a stream into messages, by wrapping messages with a prefixed length.<br/>
-    Note: I've added locks on sending and receiving, so message integrity should be safe, but you should
-    still be aware of the potential confusion/mixups inherent to having multiple threads communicate over
-    a single channel.
+ * Packages data from a stream into messages, by wrapping messages with a prefixed length.<br/>
+ * Note: I've added locks on sending and receiving, so message integrity should be safe, but you should
+ * still be aware of the potential confusion/mixups inherent to having multiple threads communicate over
+ * a single channel.<br/>
  */
 class MessageSocket {
     Socket sock;
@@ -29,7 +29,12 @@ class MessageSocket {
     late final ChannelIn<Uint8List?> _rxIn;
     late final ChannelOut<int> _recvCountOut;
 
-    MessageSocket(this.sock): this._sendLock = Mutex(), this._recvLock = Mutex() {
+    /**
+     * Wraps `sock`, immediately starts reading messages into buffer.<br/>
+     * Automatically pings at interval `autoping` (not pinging if autoping is null), flagging connection as
+     * broken if the ping fails (which takes like 30 seconds). See [ping].<br/>
+     */
+    MessageSocket(this.sock, {Duration? autoping = const Duration(seconds: 5)}): this._sendLock = Mutex(), this._recvLock = Mutex() {
         var _rxChannel = Channel<Uint8List?>();
         this._rxIn = _rxChannel.getIn();
         var rxOut = _rxChannel.getOut();
@@ -38,11 +43,13 @@ class MessageSocket {
         var _recvCountIn = _recvCountChannel.getIn();
         this._recvCountOut = _recvCountChannel.getOut();
 
+        //NEXT autoping
+
         unawaited(Future(() async {
             var sw = Stopwatch();
             var sw_big1 = Stopwatch();
             var sw_big2 = Stopwatch();
-            //DO I don't think this handles socket closure
+            //CHECK I don't think this handles socket closure
             List<List<int>> pending = [];
             int accumulated = 0;
             int? requested = null;
@@ -54,17 +61,31 @@ class MessageSocket {
             sw_big2.start();
             bool broken = false;
 
+            if (autoping != null) {
+                unawaited(Future(() async {
+                    try {
+                        while (!broken) {
+                            await sleep(autoping.inMilliseconds);
+                            await ping();
+                        }
+                    } catch (e) {
+                        zlog(INFO, "MS autoping failed, probably disconnected: $e");
+                        broken = true; //CHECK Should call .close()?
+                    }
+                }));
+            }
+
             unawaited(Future(() async {
                 while (true) {
                     sw_big2.reset();
                     if (requested == null) {
                         requested = await _recvCountIn.read();
-                        if (broken) {
+                        if (broken) { //DITTO //CHECK Should call .close()?
                             await rxOut.write(null);
                             requested = null;
-                            continue; //TODO Maybe just return?
+                            continue; //THINK Maybe just return?  That'd leave the request channel blocked.... //LEAK Leaves this future here, otherwise
                         }
-                        //zlog(DEBUG, "MS2 ${sw.lap()} rx request");
+                        zlog(DEBUG, "MS2 ${sw.lap()} rx request");
                     }
                     if (requested == 0) {
                         await rxOut.write(Uint8List(0));
@@ -83,17 +104,17 @@ class MessageSocket {
                             accumulated -= requested!;
                         }
                         requested = null;
-                        //zlog(DEBUG, "MS2 ${sw.lap()} collected response");
+                        zlog(DEBUG, "MS2 ${sw.lap()} collected response");
                         var response = Uint8List.fromList(bb.takeBytes());
-                        //zlog(DEBUG, "MS2 ${sw.lap()} built response");
-                        await rxOut.write(response); //TODO This seems like a lot of conversions
-                        //zlog(DEBUG, "MS2 ${sw.lap()} tx data");
+                        zlog(DEBUG, "MS2 ${sw.lap()} built response");
+                        await rxOut.write(response); //MISC This seems like a lot of conversions
+                        zlog(DEBUG, "MS2 ${sw.lap()} tx data");
                     } else {
                         await sleep(10);
-                        if (broken) {
+                        if (broken) { //DITTO //CHECK Should call .close()?
                             await rxOut.write(null);
                             requested = null;
-                            continue; //TODO Maybe just return?
+                            continue; //DITTO //THINK Maybe just return?
                         }
                     }
                     //zlog(DEBUG, "MS2 ${sw_big2.lap()} send total");
@@ -101,16 +122,18 @@ class MessageSocket {
             }));
 
             try {
-                await for (var data in sock) { //TODO I'm pretty sure data will still accumulate in the Socket; I wish I could backpressure it
+                await for (var data in sock) { //THINK I'm pretty sure data will still accumulate in the Socket; I wish I could backpressure it
                     sw_big1.reset();
-                    //zlog(DEBUG, "MS1 ${sw.lap()} rx data");
+                    zlog(DEBUG, "MS1 ${sw.lap()} rx data");
                     pending.add(data);
                     accumulated += data.length;
-                    //zlog(DEBUG, "MS1 ${sw.lap()} added data - acc $accumulated");
-                    //zlog(DEBUG, "MS1 ${sw_big1.lap()} read total");
+                    zlog(DEBUG, "MS1 ${sw.lap()} added data - acc $accumulated");
+                    zlog(DEBUG, "MS1 ${sw_big1.lap()} read total");
                 }
+                zlog(INFO, "MS1 done; connection presumably closed");
+                broken = true;
             } catch (e) {
-                zlog(INFO, "Connection presumably closed: $e");
+                zlog(INFO, "MS1 error; connection presumably closed: $e");
                 broken = true;
             }
         }));
@@ -125,7 +148,7 @@ class MessageSocket {
     Future<void> sendBytes(Uint8List data) async {
         await _sendLock.acquire();
         try {
-            sock.add(uint64BigEndianBytes(data.length));
+            sock.add(int64BigEndianBytes(data.length));
             // Send inverse, for validation? ...I THINK we can trust TCP to guarantee ordering and whatnot
             sock.add(data);
             await sock.flush();
@@ -142,17 +165,39 @@ class MessageSocket {
     }
 
     /**
+     * This ping gets no pong.  It relies on the behavior I've so far observed, that if you try to send
+     * data on a broken connection, it times out after 30 seconds or so, flagging the connection as broken
+     * (and aborting any read attempts in progress, btw).  The data it sends is an 8 byte big endian -1,
+     * which would otherwise indicate a subsequent message -1 bytes in length (but is discarded as a ping).<br/>
+     */
+    Future<void> ping() async {
+        await _sendLock.acquire();
+        try {
+            sock.add(int64BigEndianBytes(-1));
+            await sock.flush();
+        } finally {
+            _sendLock.release();
+        }
+    }
+
+    /**
      * Result of [] simply means an empty message; result of null implies some kind of failure; likely a disconnect.
      */
     Future<Uint8List?> recvBytes() async { //CHECK How does this handle disconnection?
         await _recvLock.acquire();
         try {
-            await _recvCountOut.write(8);
-            var lengthbuf = await _rxIn.read();
-            if (lengthbuf == null) {
-                return null;
+            int length = -1;
+            while (length < 0) {
+                await _recvCountOut.write(8);
+                var lengthbuf = await _rxIn.read();
+                if (lengthbuf == null) {
+                    return null;
+                }
+                length = bigEndianBytesInt64(lengthbuf);
+                if (length < 0) {
+                    zlog(INFO, "MS rx ping");
+                }
             }
-            var length = bigEndianBytesUint64(lengthbuf);
             if (length == 0) {
                 return Uint8List(0);
             } else {

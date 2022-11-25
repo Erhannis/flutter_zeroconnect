@@ -222,22 +222,23 @@ class ZeroConnect {
      * Apparently `serviceId` must match regex [a-zA-Z0-9-]{1,15} .  ...Or you can import 'package:nsd/nsd.dart' and call disableServiceTypeValidation(true), first.
      * No guarantees that won't have weird edge cases or platform-dependent incompatibilities.<br/>
      * `callback` is called on its own (daemon) thread.  If you want to loop forever, go for it.  `advertise` returns after registration with NSD is complete.<br/>
+     * See [MessageSocket] for info on `autoping`.
      */
-    Future<void> advertise({required void Function(MessageSocket sock, String nodeId, String serviceId) callback, required String serviceId, int port=0, InternetAddress? host}) async { //THINK Have an ugly default serviceId?
-        return _advertise(callback: callback, serviceId: serviceId, port: port, host: host, mode: SocketMode.MESSAGES);
+    Future<void> advertise({required void Function(MessageSocket sock, String nodeId, String serviceId) callback, required String serviceId, int port=0, InternetAddress? host, Duration? autoping=const Duration(seconds: 5)}) async { //THINK Have an ugly default serviceId?
+        return _advertise(callback: callback, serviceId: serviceId, port: port, host: host, mode: SocketMode.MESSAGES, autoping: autoping);
     }
 
     /**
-     * [advertise], but yields a plain Socket.
+     * [advertise], but yields a plain Socket.<br/>
      */
-    Future<void> advertiseRaw({required void Function(Socket sock, String nodeId, String serviceId) callback, required String serviceId, int port=0, InternetAddress? host}) async { //THINK Have an ugly default serviceId?
-        return _advertise(callback: callback, serviceId: serviceId, port: port, host: host, mode: SocketMode.RAW);
+    Future<void> advertiseRaw({required void Function(Socket sock, String nodeId, String serviceId) callback, required String serviceId, int port=0, InternetAddress? host, Duration? autoping=const Duration(seconds: 5)}) async { //THINK Have an ugly default serviceId?
+        return _advertise(callback: callback, serviceId: serviceId, port: port, host: host, mode: SocketMode.RAW, autoping: autoping);
     }
 
-    Future<void> _advertise({required dynamic callback, required String serviceId, int port=0, InternetAddress? host, required SocketMode mode}) async {
+    Future<void> _advertise({required dynamic callback, required String serviceId, int port=0, InternetAddress? host, required SocketMode mode, Duration? autoping=const Duration(seconds: 5)}) async {
         host ??= InternetAddress.anyIPv4; //THINK All IPvX?
         Future<void> socketCallback(Socket sock) async {
-            var messageSock = MessageSocket(sock);
+            var messageSock = MessageSocket(sock, autoping: autoping);
             await messageSock.sendString(localId); // It appears both sides can send a message at the same time.  Different comms may give different results, though.
             await messageSock.sendString(serviceId);
             var clientNodeId = await messageSock.recvString();
@@ -266,15 +267,18 @@ class ZeroConnect {
         var lsub = ssock.listen(socketCallback); //LEAK This never exits, there's no way to cancel the advertisement
         port = ssock.port;
 
-        await Nsd.register(Service(name: localId, type: _serviceToKey(serviceId), port: port)).then((registration) async {
+        //DUMMY These changes don't help right now, and they MAY not help ever, so get rid of them if we figure that out.
+        List<InternetAddress>? addresses = null;
+        if (Platform.isAndroid) {
+            addresses = (await getAddresses()).map((a) => InternetAddress(a)).toList();
+        }
+        await Nsd.register(Service(name: localId, type: _serviceToKey(serviceId), port: port, addresses: addresses)).then((registration) async {
             zlog(INFO, "registered: $registration");
             registrations.add(registration);
-            Set<String> addresses = {};
-            var host = registration.service.host;
+            var addresses = registration.service.addresses?.map((a) => "$a").toSet() ?? {};
+            var host = registration.service.host; //DUMMY At this point, the registration has already been made, so adding addresses doesn't really help.  Maybe add addresses beforehand?
             if (host != null) {
-                addresses.add(host);
-            } else {
-                addresses.addAll(await getAddresses());
+                addresses.add(host); //THINK Not sure if this should *replace* `addresses`, or be ignored if `addresses` is present, or whaaaat....
             }
             localAds.add(Ad(_serviceToKey(serviceId)!, localId, addresses, port, serviceId, localId));
         });
@@ -372,24 +376,28 @@ class ZeroConnect {
         }
     }
 
-    Future<MessageSocket?> connectToFirst({required String serviceId, String? nodeId, String localServiceId="", Duration timeout=const Duration(seconds: 30)}) async {
-        return await _connectToFirst(serviceId: serviceId, nodeId: nodeId, localServiceId: localServiceId, mode: SocketMode.MESSAGES, timeout: timeout);
-    }
-
-    Future<Socket?> connectToFirstRaw({required String serviceId, String? nodeId, String localServiceId="", Duration timeout=const Duration(seconds: 30)}) async {
-        return await _connectToFirst(serviceId: serviceId, nodeId: nodeId, localServiceId: localServiceId, mode: SocketMode.RAW, timeout: timeout);
-    }
-
     /**
      * Scan for anything that matches the IDs, try to connect to them all, and return the first
      * one that succeeds.<br/>
      * Note that this may leave extraneous dead connections in `outgoneConnections`!<br/>
      * Returns `(sock, Ad)`, or None if the timeout expires first.<br/>
      * If timeout < 0, don't scan, only use cached services.<br/>
+     * See [MessageSocket] for info on `autoping`.<br/>
      * <br/>
      * //DITTO //DUMMY Requires you to provide a serviceId, unlike the python code<br/>
      */
-    Future<dynamic?> _connectToFirst({required String serviceId, String? nodeId, String localServiceId="", required SocketMode mode, Duration timeout=const Duration(seconds: 30)}) async {
+    Future<MessageSocket?> connectToFirst({required String serviceId, String? nodeId, String localServiceId="", Duration timeout=const Duration(seconds: 30), Duration? autoping=const Duration(seconds: 5)}) async {
+        return await _connectToFirst(serviceId: serviceId, nodeId: nodeId, localServiceId: localServiceId, mode: SocketMode.MESSAGES, timeout: timeout, autoping: autoping);
+    }
+
+    /**
+     * [connectToFirst], but yields a plain Socket.<br/>
+     */
+    Future<Socket?> connectToFirstRaw({required String serviceId, String? nodeId, String localServiceId="", Duration timeout=const Duration(seconds: 30), Duration? autoping=const Duration(seconds: 5)}) async {
+        return await _connectToFirst(serviceId: serviceId, nodeId: nodeId, localServiceId: localServiceId, mode: SocketMode.RAW, timeout: timeout, autoping: autoping);
+    }
+
+    Future<dynamic?> _connectToFirst({required String serviceId, String? nodeId, String localServiceId="", required SocketMode mode, Duration timeout=const Duration(seconds: 30), Duration? autoping=const Duration(seconds: 5)}) async {
         // if serviceId == None and nodeId == None:
         //     raise Exception("Must have at least one id")
 
@@ -398,7 +406,7 @@ class ZeroConnect {
         dynamic? sock = null;
 
         Future<void> tryConnect(ad) async {
-            var localsock = await _connect(ad, localServiceId: localServiceId, mode: mode);
+            var localsock = await _connect(ad, localServiceId: localServiceId, mode: mode, autoping: autoping);
             if (localsock == null) {
                 return;
             }
@@ -431,21 +439,22 @@ class ZeroConnect {
      * Returns a raw socket, or message socket, according to mode.<br/>
      * If no connection succeeded, returns None.<br/>
      * Please close the socket once you're done with it.<br/>
+     * See [MessageSocket] for info on `autoping`.
      * <br/>
      * (localServiceId is a nicety, to optionally tell the server what service you're associated with.)<br/>
      */
-    Future<MessageSocket?> connect(Ad ad, {String localServiceId=""}) async {
-        return await _connect(ad, localServiceId: localServiceId, mode: SocketMode.MESSAGES);
+    Future<MessageSocket?> connect(Ad ad, {String localServiceId="", Duration? autoping=const Duration(seconds: 5)}) async {
+        return await _connect(ad, localServiceId: localServiceId, mode: SocketMode.MESSAGES, autoping: autoping);
     }
 
     /**
      * [connect] but returns a plain Socket.
      */
-    Future<Socket?> connectRaw(Ad ad, {String localServiceId=""}) async {
-        return await _connect(ad, localServiceId: localServiceId, mode: SocketMode.RAW);
+    Future<Socket?> connectRaw(Ad ad, {String localServiceId="", Duration? autoping=const Duration(seconds: 5)}) async {
+        return await _connect(ad, localServiceId: localServiceId, mode: SocketMode.RAW, autoping: autoping);
     }
 
-    Future<dynamic?> _connect(Ad ad, {String localServiceId="", required SocketMode mode}) async {
+    Future<dynamic?> _connect(Ad ad, {String localServiceId="", required SocketMode mode, Duration? autoping=const Duration(seconds: 5)}) async {
         var lock = Mutex();
         var sockSet = WaitGroup()..add(1);
         dynamic? sock = null;
@@ -464,7 +473,7 @@ class ZeroConnect {
             var shouldClose = false;
             MessageSocket? messageSock;
             try {
-                messageSock = MessageSocket(localsock);
+                messageSock = MessageSocket(localsock, autoping: autoping);
                 if (sock == null) {
                     await messageSock.sendString(localId); // It appears both sides can send a message at the same time.  Different comms may give different results, though.
                     await messageSock.sendString(localServiceId);
@@ -592,3 +601,5 @@ class ZeroConnect {
         outgoneConnections.clear();
     }
 }
+
+//RAINY if close stuff early, prevent it being re-closed

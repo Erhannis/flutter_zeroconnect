@@ -196,3 +196,4 @@ connect to all, forever?
 maybe some automated tests?
 .advertiseSingle to get one connection?  for quick stuff?
 I don't think either direction detects disconnects, for some reason
+interoperate with the python version
