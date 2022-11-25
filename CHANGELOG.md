@@ -1,3 +1,7 @@
+## 1.0.2
+
+Ok, maybe NOW the disconnect handling is correct?
+
 ## 1.0.1
 
 Fixed a few unawaited futures

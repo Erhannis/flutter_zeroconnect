@@ -135,6 +135,7 @@ class MessageSocket {
             } catch (e) {
                 zlog(INFO, "MS1 error; connection presumably closed: $e");
                 broken = true;
+                await close();
             }
         }));
     }
@@ -152,6 +153,9 @@ class MessageSocket {
             // Send inverse, for validation? ...I THINK we can trust TCP to guarantee ordering and whatnot
             sock.add(data);
             await sock.flush();
+        } catch (e) {
+            await close();
+            rethrow;
         } finally {
             _sendLock.release();
         }
@@ -175,6 +179,9 @@ class MessageSocket {
         try {
             sock.add(int64BigEndianBytes(-1));
             await sock.flush();
+        } catch (e) {
+            await close();
+            rethrow;
         } finally {
             _sendLock.release();
         }
