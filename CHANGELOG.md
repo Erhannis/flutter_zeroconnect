@@ -1,3 +1,7 @@
+## 1.0.3
+
+Fixed broadcast disconnection handling
+
 ## 1.0.2
 
 Ok, maybe NOW the disconnect handling is correct?

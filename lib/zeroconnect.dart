@@ -531,15 +531,24 @@ class ZeroConnect {
      * Send message to all existing connections (matching service/node filter).<br/>
      */
     Future<void> broadcastBytes(Uint8List message, {String? serviceId, String? nodeId}) async {
+        List<MessageSocket> toRemove = [];
         for (var connections in (incameConnections.getFilter([serviceId, nodeId]) + outgoneConnections.getFilter([serviceId, nodeId]))) {
             await Future.wait(connections.map((c) async {
                 try {
-                    await c.sendBytes(message); //THINK I think this may not actually error when the connection is broken
+                    await c.sendBytes(message);
                 } catch (e) {
                     zerr(WARN, "A connection errored; removing: $c");
-                    connections.remove(c);
+                    toRemove.add(c);
                 }
             }).toList());
+        }
+        for (var c in toRemove) {
+            for (var l in incameConnections.values()) {
+                l.remove(c);
+            }
+            for (var l in outgoneConnections.values()) {
+                l.remove(c);
+            }
         }
     }
 
