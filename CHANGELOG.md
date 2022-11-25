@@ -1,3 +1,7 @@
+## 1.0.0
+
+Added autoping, and I think I made disconnection detection more robust, so, 1.0.0 now
+
 ## 0.9.1
 
 Fixed some bugs in the examples; I think they all work, now
