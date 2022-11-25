@@ -366,11 +366,11 @@ class ZeroConnect {
                 }
             });
             if (time.inMicroseconds > 0) {
-                Future.delayed(time).then((_) async {
+                unawaited(Future.delayed(time).then((_) async {
                     await Nsd.stopDiscovery(discovery);
                     discoveries.remove(discovery);
                     await newAds.close();
-                });
+                }));
             }
             yield* newAds.stream;
         }
@@ -512,7 +512,7 @@ class ZeroConnect {
             } finally {
                 lock.release();
                 if (shouldClose) {
-                    Future.delayed(const Duration(milliseconds: 100)); // If I close immediately after sending, the messages don't get through before the close.  (At least in python, probably here, too.)  Sigh.
+                    await Future.delayed(const Duration(milliseconds: 100)); // If I close immediately after sending, the messages don't get through before the close.  (At least in python, probably here, too.)  Sigh.
                     await messageSock?.close();
                 }
             }
@@ -547,7 +547,7 @@ class ZeroConnect {
      * Send message to all existing connections (matching service/node filter).<br/>
      */
     Future<void> broadcastString(String message, {String? serviceId, String? nodeId}) async {
-        broadcastBytes(Uint8List.fromList(message.codeUnits), serviceId: serviceId, nodeId: nodeId);
+        await broadcastBytes(Uint8List.fromList(message.codeUnits), serviceId: serviceId, nodeId: nodeId);
     }
 
     /**

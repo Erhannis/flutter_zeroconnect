@@ -1,3 +1,7 @@
+## 1.0.1
+
+Fixed a few unawaited futures
+
 ## 1.0.0
 
 Added autoping, and I think I made disconnection detection more robust, so, 1.0.0 now
