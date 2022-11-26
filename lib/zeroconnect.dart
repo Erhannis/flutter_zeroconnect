@@ -518,9 +518,21 @@ class ZeroConnect {
             }
         }
 
+        var allTried = WaitGroup();
         for (var addr in ad.addresses) {
-            unawaited(tryConnect(addr, ad.port));
+            unawaited(Future(() async {
+                allTried.add(1);
+                try {
+                    await tryConnect(addr, ad.port);
+                } finally {
+                    allTried.done();
+                }
+            }));
         }
+        unawaited(Future(() async {
+            await allTried.wait();
+            sockSet.done();
+        }));
 
         await sockSet.wait(); // Note that this doesn't wait for the threads to finish.
 

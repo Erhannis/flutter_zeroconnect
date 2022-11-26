@@ -1,3 +1,7 @@
+## 1.0.4
+
+`connect` blocked forever if all connections failed; no longer.
+
 ## 1.0.3
 
 Fixed broadcast disconnection handling

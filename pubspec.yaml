@@ -1,6 +1,6 @@
 name: zeroconnect
 description: Uses NSD to automagically create data streams over the local network.
-version: 1.0.3
+version: 1.0.4
 homepage: https://github.com/erhannis/flutter_zeroconnect
 
 environment:
