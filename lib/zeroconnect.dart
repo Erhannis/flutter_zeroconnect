@@ -285,7 +285,7 @@ class ZeroConnect {
     }
 
     /**
-     * Scans for `time`, and returns matching services.<br/>
+     * Scans for `time`, and returns matching services (including previously discovered services).<br/>
      * If `time` is zero, begin scanning (and DON'T STOP), and return previously discovered services.<br/>
      * If `time` is negative, DON'T scan, and instead just return previously discovered services.<br/>
      * <br/>
@@ -374,6 +374,13 @@ class ZeroConnect {
             }
             yield* newAds.stream;
         }
+    }
+
+    /**
+     * By default, scanning will also return the cached results of previous scans.  Call this to clear those old results.
+     */
+    void clearOldScans() {
+        remoteAds.clear();
     }
 
     /**
