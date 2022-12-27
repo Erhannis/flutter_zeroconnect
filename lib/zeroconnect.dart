@@ -6,14 +6,14 @@ import 'dart:developer';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:sync/sync.dart';
-import 'package:sync/waitgroup.dart';
+import 'package:sync/mutex.dart';
 import 'package:uuid/uuid.dart';
 import 'package:nsd/nsd.dart' show Discovery, Registration, Service, ServiceStatus;
 import 'package:nsd/nsd.dart' as Nsd;
 
 import 'FilterMap.dart';
 import 'MessageSocket.dart';
+import 'csp/WaitGroup.dart';
 import 'misc.dart';
 
 // Translated from https://github.com/Erhannis/zeroconnect/blob/master/zeroconnect/zeroconnect.py
