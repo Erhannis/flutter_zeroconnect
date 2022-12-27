@@ -1,3 +1,7 @@
+## 1.0.5
+
+Tweaked docs and added `clearOldScans`.
+
 ## 1.0.4
 
 `connect` blocked forever if all connections failed; no longer.
