@@ -1,3 +1,7 @@
+## 1.0.6
+
+Fixed a pointless error
+
 ## 1.0.5
 
 Tweaked docs and added `clearOldScans`.
