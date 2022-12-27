@@ -1,3 +1,7 @@
+## 1.0.7
+
+Trying again
+
 ## 1.0.6
 
 Fixed a pointless error
