@@ -171,7 +171,8 @@ Calling `broadcast` will automatically clean up dead connections.  ...Theoretica
 If you close your socket immediately after sending a message, the data may not finish sending.  Not my fault; blame socket.
 
 `broadcast` uses MessageSockets, so if you're using a raw socket, be aware the message will be prefixed with a header, currently
-an 8 byte unsigned big-endian long representing the length of the subsequent message.  See `MessageSocket`.
+an 8 byte unsigned big-endian long representing the length of the subsequent message, followed by the same but inverted
+(xor with 8 bytes of 0xFF).  See `MessageSocket`.
 
 See near the start of zeroconnect.dart to see logging settings, or do like so:
 ```dart

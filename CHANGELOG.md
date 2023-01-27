@@ -1,3 +1,7 @@
+## 1.1.0
+
+Message header is now like [length, length ^ -1], for checksum
+
 ## 1.0.7
 
 Trying again

@@ -16,7 +16,8 @@ Uint8List int64BigEndianBytes(int value) => Uint8List(8)..buffer.asByteData().se
 int bigEndianBytesInt64(Uint8List bytes) => bytes.buffer.asByteData().getInt64(0, Endian.big);
 
 /**
- * Packages data from a stream into messages, by wrapping messages with a prefixed length.<br/>
+ * Packages data from a stream into messages, by wrapping messages with a prefixed length (and then
+ * the length inverted (xor 0xFFF...), for checksum).<br/>
  * Note: I've added locks on sending and receiving, so message integrity should be safe, but you should
  * still be aware of the potential confusion/mixups inherent to having multiple threads communicate over
  * a single channel.<br/>
@@ -87,7 +88,11 @@ class MessageSocket {
                         }
                         zlog(DEBUG, "MS2 ${sw.lap()} rx request");
                     }
-                    if (requested == 0) {
+                    if (requested == -1) {
+                        pending.clear();
+                        accumulated = 0;
+                        requested = null;
+                    } else if (requested == 0) {
                         await rxOut.write(Uint8List(0));
                         requested = null;
                     } else if (accumulated >= requested!) {
@@ -150,7 +155,12 @@ class MessageSocket {
         await _sendLock.acquire();
         try {
             sock.add(int64BigEndianBytes(data.length));
-            // Send inverse, for validation? ...I THINK we can trust TCP to guarantee ordering and whatnot
+            // Send inverse, for validation
+            Uint8List inv = int64BigEndianBytes(data.length);
+            for (int i = 0; i < inv.length; i++) {
+                inv[i] ^= 0xFF;
+            }
+            sock.add(inv);
             sock.add(data);
             await sock.flush();
         } catch (e) {
@@ -177,7 +187,7 @@ class MessageSocket {
     Future<void> ping() async {
         await _sendLock.acquire();
         try {
-            sock.add(int64BigEndianBytes(-1));
+            sock.add(int64BigEndianBytes(-1)); //THINK Should pings get checksummed, too?
             await sock.flush();
         } catch (e) {
             await close();
@@ -203,6 +213,19 @@ class MessageSocket {
                 length = bigEndianBytesInt64(lengthbuf);
                 if (length < 0) {
                     zlog(INFO, "MS rx ping");
+                }
+                await _recvCountOut.write(8);
+                var invbuf = await _rxIn.read();
+                if (invbuf == null) {
+                    return null;
+                }
+                for (int i = 0; i < 8; i++) {
+                    if (lengthbuf[i] ^ invbuf[i] != 0xFF) {
+                        zlog(WARN, "MS checksum failed!"); //THINK Throw error or something?
+                        await _recvCountOut.write(-1); // Clears input buffer
+                        length = -1;
+                        break;
+                    }
                 }
             }
             if (length == 0) {
