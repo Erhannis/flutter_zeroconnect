@@ -154,14 +154,16 @@ class MessageSocket {
     Future<void> sendBytes(Uint8List data) async {
         await _sendLock.acquire();
         try {
-            sock.add(int64BigEndianBytes(data.length));
+            List<int> bb = [];
+            bb.addAll(int64BigEndianBytes(data.length));
             // Send inverse, for validation
             Uint8List inv = int64BigEndianBytes(data.length);
             for (int i = 0; i < inv.length; i++) {
                 inv[i] ^= 0xFF;
             }
-            sock.add(inv);
-            sock.add(data);
+            bb.addAll(inv);
+            bb.addAll(data);
+            sock.add(bb);
             await sock.flush();
         } catch (e) {
             await close();

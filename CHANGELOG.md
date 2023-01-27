@@ -1,3 +1,7 @@
+## 1.1.1
+
+Tweaks to possibly consolidate packets
+
 ## 1.1.0
 
 Message header is now like [length, length ^ -1], for checksum
