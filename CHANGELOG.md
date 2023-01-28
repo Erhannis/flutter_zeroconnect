@@ -1,3 +1,7 @@
+## 1.1.2
+
+Checksum bugfix
+
 ## 1.1.1
 
 Tweaks to possibly consolidate packets

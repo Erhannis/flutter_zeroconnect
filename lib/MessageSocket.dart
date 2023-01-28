@@ -214,7 +214,9 @@ class MessageSocket {
                 }
                 length = bigEndianBytesInt64(lengthbuf);
                 if (length < 0) {
-                    zlog(INFO, "MS rx ping");
+                    zlog(INFO, "MS rx ping"); // ...Wait, what's the point of these pings, again?  Oh, right, for some transports it can trigger exposure of a broken connection.
+                    length = -1;
+                    continue;
                 }
                 await _recvCountOut.write(8);
                 var invbuf = await _rxIn.read();
