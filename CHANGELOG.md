@@ -1,3 +1,7 @@
+## 1.2.0
+
+Added some checks and options for robustness.  Also fixed some fatal bugs.
+
 ## 1.1.2
 
 Checksum bugfix

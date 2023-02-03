@@ -199,52 +199,125 @@ class MessageSocket {
         }
     }
 
+    void _rotateBytes(Uint8List a, Uint8List? b, int c) {
+        for (int i = 0; i < a.length-1; i++) {
+            a[i] = a[i+1];
+        }
+        if (b != null) {
+            a[a.length-1] = b[0];
+            for (int i = 0; i < b.length-1; i++) {
+                b[i] = b[i+1];
+            }
+            b[b.length-1] = c;
+        } else {
+            a[a.length-1] = c;
+        }
+    }
+
     /**
      * Result of [] simply means an empty message; result of null implies some kind of failure; likely a disconnect.
-     */
-    Future<Uint8List?> recvBytes() async { //CHECK How does this handle disconnection?
+     * //NEXT Update docs
+     */ //DUMMY Update python code
+    Future<Uint8List?> recvBytes({int maxLen = 1000000, bool tryHard = true}) async { //CHECK How does this handle disconnection?
+        zlog(DEBUG, "MS recvBytes -->lock");
         await _recvLock.acquire();
+        zlog(DEBUG, "MS recvBytes ---lock");
         try {
-            int length = -1;
-            while (length < 0) {
-                await _recvCountOut.write(8);
-                var lengthbuf = await _rxIn.read();
-                if (lengthbuf == null) {
-                    return null;
-                }
-                length = bigEndianBytesInt64(lengthbuf);
-                if (length < 0) {
-                    zlog(INFO, "MS rx ping"); // ...Wait, what's the point of these pings, again?  Oh, right, for some transports it can trigger exposure of a broken connection.
-                    length = -1;
-                    continue;
-                }
-                await _recvCountOut.write(8);
-                var invbuf = await _rxIn.read();
-                if (invbuf == null) {
-                    return null;
-                }
-                for (int i = 0; i < 8; i++) {
-                    if (lengthbuf[i] ^ invbuf[i] != 0xFF) {
-                        zlog(WARN, "MS checksum failed!"); //THINK Throw error or something?
-                        await _recvCountOut.write(-1); // Clears input buffer
-                        length = -1;
-                        break;
+            int len = -1;
+            Uint8List? lenBuf = null;
+            Uint8List? invBuf = null;
+            readloop: while (len < 0) {
+                if (lenBuf == null) {
+                    await _recvCountOut.write(8);
+                    lenBuf = await _rxIn.read();
+                    if (lenBuf == null) {
+                        return null;
                     }
                 }
+                zlog(DEBUG, "MS rx proc 1 $lenBuf");
+                int tempLen = bigEndianBytesInt64(lenBuf);
+                // if ping advance and retry
+                if (tempLen < 0) { // Any length < 0 is invalid, anyway; though maybe isn't a ping.... //THINK Should pings be checksummed, too?
+                    // ...Wait, what's the point of these pings, again?  Oh, right, for some transports it can trigger exposure of a broken connection.
+                    if (!tryHard) {
+                        zlog(INFO, "MS rx ping");
+                        lenBuf = null;
+                        invBuf = null;
+                    } else { // If messages out of sync, could erroneously identify as ping and discard important bytes
+                        zlog(INFO, "MS rx ping?"); //THINK OTOH, if messages IN sync, could correctly identify as ping, then check a bunch of subsequent sequences.  ...I don't think the invalid ones would validate, though, since the ping would mean they'd start with 0xFF.
+                        await _recvCountOut.write(1);
+                        var nextByte = await _rxIn.read();
+                        if (nextByte == null) {
+                            return null;
+                        }
+                        _rotateBytes(lenBuf, invBuf, nextByte[0]);
+                    }
+                    continue readloop;
+                }
+
+                if (invBuf == null) {
+                    await _recvCountOut.write(8);
+                    invBuf = await _rxIn.read();
+                    if (invBuf == null) {
+                        return null;
+                    }
+                }
+                zlog(DEBUG, "MS rx proc 2 $lenBuf $invBuf");
+                // if bad checksum advance and retry
+                for (int i = 0; i < 8; i++) {
+                    if (lenBuf![i] ^ invBuf![i] != 0xFF) {
+                        zlog(WARN, "MS checksum failed! $lenBuf $invBuf");
+                        if (!tryHard) {
+                            await _recvCountOut.write(-1); // Clears input buffer
+                            lenBuf = null;
+                            invBuf = null;
+                        } else {
+                            await _recvCountOut.write(1);
+                            var nextByte = await _rxIn.read();
+                            if (nextByte == null) {
+                                return null;
+                            }
+                            _rotateBytes(lenBuf, invBuf, nextByte[0]);
+                        }
+                        continue readloop;
+                    }
+                }
+
+                // if too big advance and retry
+                if (tempLen > maxLen) {
+                    zlog(WARN, "Message bigger than limit: $tempLen");
+                    if (!tryHard) {
+                        await _recvCountOut.write(-1); // Clears input buffer
+                        lenBuf = null;
+                        invBuf = null;
+                    } else {
+                        await _recvCountOut.write(1);
+                        var nextByte = await _rxIn.read();
+                        if (nextByte == null) {
+                            return null;
+                        }
+                        _rotateBytes(lenBuf!, invBuf, nextByte[0]);
+                    }
+                    continue readloop;
+                }
+
+                len = tempLen;
             }
-            if (length == 0) {
+
+            if (len == 0) {
                 return Uint8List(0);
             } else {
-                await _recvCountOut.write(length);
+                await _recvCountOut.write(len);
                 return await _rxIn.read();
             }
         } finally {
             _recvLock.release();
+            zlog(DEBUG, "MS recvBytes <--lock");
         }
     }
 
-    Future<String?> recvString({bool? allowMalformed = true}) async { //THINK Should allowMalformed?
-        var msg = await recvBytes();
+    Future<String?> recvString({bool? allowMalformed = true, int maxLen = 1000000, bool tryHard = true}) async { //THINK Should allowMalformed?
+        var msg = await recvBytes(maxLen: maxLen, tryHard: tryHard);
         if (msg == null) {
             return null;
         }
