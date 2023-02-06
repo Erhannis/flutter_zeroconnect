@@ -17,7 +17,7 @@ int bigEndianBytesInt64(Uint8List bytes) => bytes.buffer.asByteData().getInt64(0
 
 /**
  * Packages data from a stream into messages, by wrapping messages with a prefixed length (and then
- * the length inverted (xor 0xFFF...), for checksum).<br/>
+ * the length reversed and inverted (xor 0xFFF...), for checksum).<br/>
  * Note: I've added locks on sending and receiving, so message integrity should be safe, but you should
  * still be aware of the potential confusion/mixups inherent to having multiple threads communicate over
  * a single channel.<br/>
@@ -161,6 +161,7 @@ class MessageSocket {
             for (int i = 0; i < inv.length; i++) {
                 inv[i] ^= 0xFF;
             }
+            inv = Uint8List.fromList(inv.reversed.toList());
             bb.addAll(inv);
             bb.addAll(data);
             sock.add(bb);
@@ -265,7 +266,7 @@ class MessageSocket {
                 zlog(DEBUG, "MS rx proc 2 $lenBuf $invBuf");
                 // if bad checksum advance and retry
                 for (int i = 0; i < 8; i++) {
-                    if (lenBuf![i] ^ invBuf![i] != 0xFF) {
+                    if (lenBuf![i] ^ invBuf![7-i] != 0xFF) {
                         zlog(WARN, "MS checksum failed! $lenBuf $invBuf");
                         if (!tryHard) {
                             await _recvCountOut.write(-1); // Clears input buffer

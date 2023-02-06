@@ -1,3 +1,7 @@
+## 1.3.0
+
+Message header is now like [len, (len ^ -1).reverse()] .  Maybe this oughtta be a major version increment?  That feels weird, though.
+
 ## 1.2.0
 
 Added some checks and options for robustness.  Also fixed some fatal bugs.
