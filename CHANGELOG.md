@@ -1,3 +1,7 @@
+## 1.4.0
+
+Swapped out lock library to get reentrancy
+
 ## 1.3.0
 
 Message header is now like [len, (len ^ -1).reverse()] .  Maybe this oughtta be a major version increment?  That feels weird, though.

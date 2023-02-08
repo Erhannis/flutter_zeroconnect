@@ -6,7 +6,7 @@ import 'dart:developer';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:sync/sync.dart';
+import 'package:synchronized/synchronized.dart';
 
 import 'csp/Channel.dart';
 import 'misc.dart';
@@ -24,8 +24,8 @@ int bigEndianBytesInt64(Uint8List bytes) => bytes.buffer.asByteData().getInt64(0
  */
 class MessageSocket {
     Socket sock;
-    Mutex _sendLock;
-    Mutex _recvLock;
+    final Lock mSendLock; // Exposed for subclasses
+    final Lock mRecvLock; // Ditto
 
     late final ChannelIn<Uint8List?> _rxIn;
     late final ChannelOut<int> _recvCountOut;
@@ -35,7 +35,7 @@ class MessageSocket {
      * Automatically pings at interval `autoping` (not pinging if autoping is null), flagging connection as
      * broken if the ping fails (which takes like 30 seconds). See [ping].<br/>
      */
-    MessageSocket(this.sock, {Duration? autoping = const Duration(seconds: 5)}): this._sendLock = Mutex(), this._recvLock = Mutex() {
+    MessageSocket(this.sock, {Duration? autoping = const Duration(seconds: 5)}): this.mSendLock = Lock(reentrant: true), this.mRecvLock = Lock(reentrant: true) {
         var _rxChannel = Channel<Uint8List?>();
         this._rxIn = _rxChannel.getIn();
         var rxOut = _rxChannel.getOut();
@@ -152,26 +152,25 @@ class MessageSocket {
      * //DUMMY Doesn't throw.  Just keeps going.  Should probably fix that.<br/>
      */
     Future<void> sendBytes(Uint8List data) async {
-        await _sendLock.acquire();
-        try {
-            List<int> bb = [];
-            bb.addAll(int64BigEndianBytes(data.length));
-            // Send inverse, for validation
-            Uint8List inv = int64BigEndianBytes(data.length);
-            for (int i = 0; i < inv.length; i++) {
-                inv[i] ^= 0xFF;
+        await mSendLock.synchronized(() async {
+            try {
+                List<int> bb = [];
+                bb.addAll(int64BigEndianBytes(data.length));
+                // Send inverse, for validation
+                Uint8List inv = int64BigEndianBytes(data.length);
+                for (int i = 0; i < inv.length; i++) {
+                    inv[i] ^= 0xFF;
+                }
+                inv = Uint8List.fromList(inv.reversed.toList());
+                bb.addAll(inv);
+                bb.addAll(data);
+                sock.add(bb);
+                await sock.flush();
+            } catch (e) {
+                await close();
+                rethrow;
             }
-            inv = Uint8List.fromList(inv.reversed.toList());
-            bb.addAll(inv);
-            bb.addAll(data);
-            sock.add(bb);
-            await sock.flush();
-        } catch (e) {
-            await close();
-            rethrow;
-        } finally {
-            _sendLock.release();
-        }
+        });
     }
 
     /**
@@ -188,16 +187,15 @@ class MessageSocket {
      * which would otherwise indicate a subsequent message -1 bytes in length (but is discarded as a ping).<br/>
      */
     Future<void> ping() async {
-        await _sendLock.acquire();
-        try {
-            sock.add(int64BigEndianBytes(-1)); //THINK Should pings get checksummed, too?
-            await sock.flush();
-        } catch (e) {
-            await close();
-            rethrow;
-        } finally {
-            _sendLock.release();
-        }
+        await mSendLock.synchronized(() async {
+            try {
+                sock.add(int64BigEndianBytes(-1)); //THINK Should pings get checksummed, too?
+                await sock.flush();
+            } catch (e) {
+                await close();
+                rethrow;
+            }
+        });
     }
 
     void _rotateBytes(Uint8List a, Uint8List? b, int c) {
@@ -221,9 +219,9 @@ class MessageSocket {
      */ //DUMMY Update python code
     Future<Uint8List?> recvBytes({int maxLen = 1000000, bool tryHard = true}) async { //CHECK How does this handle disconnection?
         zlog(DEBUG, "MS recvBytes -->lock");
-        await _recvLock.acquire();
-        zlog(DEBUG, "MS recvBytes ---lock");
-        try {
+        var r = await mRecvLock.synchronized(() async {
+            zlog(DEBUG, "MS recvBytes ---lock");
+
             int len = -1;
             Uint8List? lenBuf = null;
             Uint8List? invBuf = null;
@@ -311,10 +309,9 @@ class MessageSocket {
                 await _recvCountOut.write(len);
                 return await _rxIn.read();
             }
-        } finally {
-            _recvLock.release();
-            zlog(DEBUG, "MS recvBytes <--lock");
-        }
+        });
+        zlog(DEBUG, "MS recvBytes <--lock");
+        return r;
     }
 
     Future<String?> recvString({bool? allowMalformed = true, int maxLen = 1000000, bool tryHard = true}) async { //THINK Should allowMalformed?

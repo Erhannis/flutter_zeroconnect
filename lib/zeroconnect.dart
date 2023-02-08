@@ -6,7 +6,7 @@ import 'dart:developer';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:sync/mutex.dart';
+import 'package:synchronized/synchronized.dart';
 import 'package:uuid/uuid.dart';
 import 'package:nsd/nsd.dart' show Discovery, Registration, Service, ServiceStatus;
 import 'package:nsd/nsd.dart' as Nsd;
@@ -462,7 +462,7 @@ class ZeroConnect {
     }
 
     Future<dynamic?> _connect(Ad ad, {String localServiceId="", required SocketMode mode, Duration? autoping=const Duration(seconds: 5)}) async {
-        var lock = Mutex();
+        var lock = Lock(reentrant: true);
         var sockSet = WaitGroup()..add(1);
         dynamic? sock = null;
 
@@ -476,51 +476,54 @@ class ZeroConnect {
                 return;
             }
 
-            await lock.acquire();
             var shouldClose = false;
-            MessageSocket? messageSock;
+            MessageSocket? messageSock0;
             try {
-                messageSock = MessageSocket(localsock, autoping: autoping);
-                if (sock == null) {
-                    await messageSock.sendString(localId); // It appears both sides can send a message at the same time.  Different comms may give different results, though.
-                    await messageSock.sendString(localServiceId);
-                    var clientNodeId = await messageSock.recvString();
-                    var clientServiceId = await messageSock.recvString(); // Note that this might be empty
-                    if ((clientNodeId == null || clientServiceId == null) || (clientNodeId.isEmpty && clientServiceId.isEmpty)) {
-                        // Connection was canceled (or was invalid)
-                        zlog(INFO, "connection canceled from $addr $port");
-                        await messageSock.close();
-                    } else {
-                        // The client might report different IDs than its service - is that problematic?
-                        // ...Actually, clients don't need to have an advertised service in the first place.  So, no.
-                        if (outgoneConnections[[clientNodeId, clientServiceId]].isEmpty) {
-                            outgoneConnections[[clientNodeId, clientServiceId]] = [];
+                await lock.synchronized(() async {
+                    try {
+                        var messageSock = MessageSocket(localsock, autoping: autoping);
+                        messageSock0 = messageSock;
+                        if (sock == null) {
+                            await messageSock.sendString(localId); // It appears both sides can send a message at the same time.  Different comms may give different results, though.
+                            await messageSock.sendString(localServiceId);
+                            var clientNodeId = await messageSock.recvString();
+                            var clientServiceId = await messageSock.recvString(); // Note that this might be empty
+                            if ((clientNodeId == null || clientServiceId == null) || (clientNodeId.isEmpty && clientServiceId.isEmpty)) {
+                                // Connection was canceled (or was invalid)
+                                zlog(INFO, "connection canceled from $addr $port");
+                                await messageSock.close();
+                            } else {
+                                // The client might report different IDs than its service - is that problematic?
+                                // ...Actually, clients don't need to have an advertised service in the first place.  So, no.
+                                if (outgoneConnections[[clientNodeId, clientServiceId]].isEmpty) {
+                                    outgoneConnections[[clientNodeId, clientServiceId]] = [];
+                                }
+                                outgoneConnections.getExact([clientNodeId, clientServiceId])!.add(messageSock);
+                                switch (mode) {
+                                    case SocketMode.RAW:
+                                        sock = localsock;
+                                        break;
+                                    case SocketMode.MESSAGES:
+                                        sock = messageSock;
+                                        break;
+                                }
+                                sockSet.done();
+                            }
+                        } else {
+                            zlog(INFO, "$addr $port Beaten to the punch; closing outgoing connection");
+                            await messageSock.sendString("");
+                            await messageSock.sendString("");
+                            shouldClose = true;
                         }
-                        outgoneConnections.getExact([clientNodeId, clientServiceId])!.add(messageSock);
-                        switch (mode) {
-                            case SocketMode.RAW:
-                                sock = localsock;
-                                break;
-                            case SocketMode.MESSAGES:
-                                sock = messageSock;
-                                break;
-                        }
-                        sockSet.done();
+                    } catch (e) {
+                        zerr(WARN, "An error occured in connection-forming code: $e");
+                        return;
                     }
-                } else {
-                    zlog(INFO, "$addr $port Beaten to the punch; closing outgoing connection");
-                    await messageSock.sendString("");
-                    await messageSock.sendString("");
-                    shouldClose = true;
-                }
-            } catch (e) {
-                zerr(WARN, "An error occured in connection-forming code: $e");
-                return;
+                });
             } finally {
-                lock.release();
                 if (shouldClose) {
                     await Future.delayed(const Duration(milliseconds: 100)); // If I close immediately after sending, the messages don't get through before the close.  (At least in python, probably here, too.)  Sigh.
-                    await messageSock?.close();
+                    await messageSock0?.close();
                 }
             }
         }

@@ -1,30 +1,24 @@
-import 'package:sync/mutex.dart';
+import 'package:synchronized/synchronized.dart';
 
 import 'Exchanger.dart';
 
 //RAINY Export to separate package?
 class Channel<T> implements ChannelIn<T>, ChannelOut<T> {
   final _ex = Exchanger<T?>();
-  final _readLock = Mutex();
-  final _writeLock = Mutex();
+  final _readLock = Lock();
+  final _writeLock = Lock();
 
   Future<T> read() async {
-    await _readLock.acquire();
-    try {
+    return await _readLock.synchronized(() async {
       dynamic x = (await _ex.exchange(null));
       return x;
-    } finally {
-      _readLock.release();
-    }
+    });
   }
 
   Future<void> write(T x) async {
-    await _writeLock.acquire();
-    try {
+    await _writeLock.synchronized(() async {
       await _ex.exchange(x);
-    } finally {
-      _writeLock.release();
-    }
+    });
   }
 
   ChannelIn<T> getIn() {
