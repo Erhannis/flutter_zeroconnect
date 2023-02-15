@@ -150,8 +150,13 @@ class MessageSocket {
      * `data` should be a list of bytes, or a string (which will then be encoded with utf-8.)<br/>
      * Throws exception on socket failure.<br/>
      * //DUMMY Doesn't throw.  Just keeps going.  Should probably fix that.<br/>
+     * If not `important`, and another message is currently being sent, returns false instead of sending the message.<br/>
+     * Otherwise, returns true once message has been added to the sock.<br/>
      */
-    Future<void> sendBytes(Uint8List data) async {
+    Future<bool> sendBytes(Uint8List data, {bool important = true}) async {
+        if (mSendLock.locked && !important) {
+            return false;
+        }
         await mSendLock.synchronized(() async {
             try {
                 List<int> bb = [];
@@ -166,6 +171,7 @@ class MessageSocket {
                 bb.addAll(data);
                 sock.add(bb);
                 await sock.flush();
+                return true;
             } catch (e) {
                 await close();
                 rethrow;
@@ -176,8 +182,8 @@ class MessageSocket {
     /**
      * See `sendBytes`
      */
-    Future<void> sendString(String s) async {
-        await sendBytes(Uint8List.fromList(s.codeUnits)); //TODO UTF-16???
+    Future<bool> sendString(String s, {bool important = true}) async {
+        return await sendBytes(Uint8List.fromList(s.codeUnits), important: important); //TODO UTF-16???
     }
 
     /**
@@ -281,6 +287,7 @@ class MessageSocket {
                         continue readloop;
                     }
                 }
+                zlog(INFO, "MS checksum succeeded: $lenBuf $invBuf");
 
                 // if too big advance and retry
                 if (tempLen > maxLen) {
@@ -307,7 +314,10 @@ class MessageSocket {
                 return Uint8List(0);
             } else {
                 await _recvCountOut.write(len);
-                return await _rxIn.read();
+                zlog(INFO, "MS -->awaiting $len");
+                var r = await _rxIn.read();
+                zlog(INFO, "MS <--awaiting $len");
+                return r;
             }
         });
         zlog(DEBUG, "MS recvBytes <--lock");
