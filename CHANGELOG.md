@@ -1,3 +1,7 @@
+## 1.5.0
+
+Added ability to make MessageSocket send non-important
+
 ## 1.4.0
 
 Swapped out lock library to get reentrancy

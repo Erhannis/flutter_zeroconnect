@@ -157,7 +157,7 @@ class MessageSocket {
         if (mSendLock.locked && !important) {
             return false;
         }
-        await mSendLock.synchronized(() async {
+        return await mSendLock.synchronized(() async {
             try {
                 List<int> bb = [];
                 bb.addAll(int64BigEndianBytes(data.length));
