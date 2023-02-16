@@ -1,6 +1,6 @@
 ## 1.5.0
 
-Added ability to make MessageSocket send non-important
+Added ability to make MessageSocket send non-important; fixed bug
 
 ## 1.4.0
 

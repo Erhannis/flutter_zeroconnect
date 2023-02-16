@@ -154,7 +154,7 @@ class MessageSocket {
      * Otherwise, returns true once message has been added to the sock.<br/>
      */
     Future<bool> sendBytes(Uint8List data, {bool important = true}) async {
-        if (mSendLock.locked && !important) {
+        if (mSendLock.locked && !mSendLock.inLock && !important) {
             return false;
         }
         return await mSendLock.synchronized(() async {
