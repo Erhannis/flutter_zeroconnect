@@ -36,6 +36,8 @@ class FailureCounter {
 Subclass of MessageSocket that tracks what messages have been received, and retransmits ones that haven't been.  Not SUPER robust, and not super efficient, but it's much better than nothing.
 */
 class RetransmittingMSock extends MessageSocket {
+    static const RETX_LIMIT = 5; //RAINY Optionize
+
     RetransmittingMSock(Socket sock) : super(sock);
 
     /*
@@ -160,20 +162,25 @@ class RetransmittingMSock extends MessageSocket {
                                         _rxFuture++;
                                         continue retry;
                                     }
+                                    _rxCount++; // The message is valid - plus, we might reset shortly
                                     if (txId != _txCount) { //NEXT what if _txCount changes mid function
                                         // They're missing a message
                                         // Retransmit
                                         //RAINY Combine with explicit reTX?
                                         //NEXT At some point, retransmissions dominate and the network is frozen.  Should there be a clear-all protocol?
-                                        for (int i = txId + 1; i <= _txCount; i++) { //THINK This seems network-cloggy - I think, even without explicit looping, the system would get up-to-date eventually...but that would probably involve a lot of invalid messages, so.
-                                            var bytes = _unconfirmedTransmissions[i];
-                                            if (bytes != null) {
-                                                log("RMS remote missed msg; reTX: $i (vs $_txCount)");
-                                                await this._sendBytes(i, bytes, important: true); //CHECK asynchronously? //NEXT Update numbers?? (just store normal data, call local sendBytes?)  Wait - but the message has to have the old tx number, at least
-                                            } else {
-                                                log("RMS remote missed msg; unstored: $i vs $_txCount");
-                                                if (_resetTimeout.fail()) {
-                                                    await _triggerReset();
+                                        if (_txCount-txId > RETX_LIMIT) {
+                                            await _triggerReset();
+                                        } else {
+                                            for (int i = txId + 1; i <= _txCount; i++) { //THINK This seems network-cloggy - I think, even without explicit looping, the system would get up-to-date eventually...but that would probably involve a lot of invalid messages, so.
+                                                var bytes = _unconfirmedTransmissions[i];
+                                                if (bytes != null) {
+                                                    log("RMS remote missed msg; reTX: $i (vs $_txCount)");
+                                                    await this._sendBytes(i, bytes, important: true); //CHECK asynchronously? //NEXT Update numbers?? (just store normal data, call local sendBytes?)  Wait - but the message has to have the old tx number, at least
+                                                } else {
+                                                    log("RMS remote missed msg; unstored: $i vs $_txCount");
+                                                    if (_resetTimeout.fail()) {
+                                                        await _triggerReset();
+                                                    }
                                                 }
                                             }
                                         }
@@ -185,22 +192,25 @@ class RetransmittingMSock extends MessageSocket {
                                         _resetTimeout.succeed(); //THINK Should success be counted in other cases?  Could a restart loop happen?
                                         _rxGood++;
                                     }
-                                    _rxCount++;
                                     return data.sublist(9);
                                 }
                             case 0x52:
                                 { // 'R'
                                     int txId = bigEndianBytesInt32(data.sublist(1, 1 + 4));
                                     // Retransmit
-                                    for (int i = txId; i <= _txCount; i++) { //THINK This seems network-cloggy - I think, even without explicit looping, the system would get up-to-date eventually...but that would probably involve a lot of invalid messages, so.
-                                        var bytes = _unconfirmedTransmissions[i];
-                                        if (bytes != null) {
-                                            log("RMS remote requested reTX: $i (vs $_txCount)");
-                                            await this._sendBytes(i, bytes, important: true); //CHECK asynchronously? //NEXT Update numbers?? (just store normal data, call local sendBytes?)
-                                        } else {
-                                            log("RMS remote requested reTX of unstored data: $i vs $_txCount");
-                                            if (_resetTimeout.fail()) {
-                                                await _triggerReset();
+                                    if (_txCount-txId > RETX_LIMIT) {
+                                        await _triggerReset();
+                                    } else {
+                                        for (int i = txId; i <= _txCount; i++) { //THINK This seems network-cloggy - I think, even without explicit looping, the system would get up-to-date eventually...but that would probably involve a lot of invalid messages, so.
+                                            var bytes = _unconfirmedTransmissions[i];
+                                            if (bytes != null) {
+                                                log("RMS remote requested reTX: $i (vs $_txCount)");
+                                                await this._sendBytes(i, bytes, important: true); //CHECK asynchronously? //NEXT Update numbers?? (just store normal data, call local sendBytes?)
+                                            } else {
+                                                log("RMS remote requested reTX of unstored data: $i vs $_txCount");
+                                                if (_resetTimeout.fail()) {
+                                                    await _triggerReset();
+                                                }
                                             }
                                         }
                                     }
