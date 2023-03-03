@@ -185,6 +185,8 @@ void main() {
 ```
 zeroconnect.dart also contains some presets; ERROR/WARN/INFO/VERBOSE/DEBUG atm.
 
+RetransmittingMSock might be useful to you, as well, though I haven't incorporated it into zeroconnect - TCP should already handle reliability etc.
+
 ## License
 
 `zeroconnect` is distributed under the terms of the [MIT](https://spdx.org/licenses/MIT.html) license.
