@@ -27,14 +27,14 @@ Add the following permissions to your manifest:
 
 ### iOS
 
-Add the following permissions to your Info.plist (replace service type with your own):
+Add the following permissions to your Info.plist, replacing "YOURSERVICEID" appropriately:
 
 ```Xml
 <key>NSLocalNetworkUsageDescription</key>
 <string>Required to discover local network devices</string>
 <key>NSBonjourServices</key>
 <array>
-    <string>_http._tcp</string>
+    <string>_YOURSERVICEID._tcp</string>
 </array>
 ```
 
