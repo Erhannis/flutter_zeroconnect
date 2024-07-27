@@ -11,8 +11,10 @@ Uses [NSD](https://github.com/sebastianhaberey/nsd), which means this has its re
 **Table of Contents**
 
 - [Permissions](#permissions)
-- [License](#license)
+- [Usage](#usage)
+- [YOURSERVICEID](#yourserviceid)
 - [Tips](#tips)
+- [License](#license)
 
 ## Permissions
 
@@ -27,14 +29,14 @@ Add the following permissions to your manifest:
 
 ### iOS
 
-Add the following permissions to your Info.plist (replace service type with your own):
+Add the following permissions to your Info.plist, replacing "YOURSERVICEID" appropriately:
 
 ```Xml
 <key>NSLocalNetworkUsageDescription</key>
 <string>Required to discover local network devices</string>
 <key>NSBonjourServices</key>
 <array>
-    <string>_http._tcp</string>
+    <string>_YOURSERVICEID._tcp</string>
 </array>
 ```
 
@@ -155,6 +157,9 @@ Socket.  Sorry.
 //DUMMY Look into fixing that, and maybe add example code
 
 There's a few other functions you might find useful.  Check autocomplete, look at the source code.
+
+## YOURSERVICEID
+It is reported ( #3 ) that your service id must be 1-15 chars long, and consist only of a combination of a-z A-Z 0-9.  I haven't checked it personally, but I do remember encountering something like that (possibly platform-dependent), so if you're having trouble, check that your service id conforms to those limits.
 
 ## Tips
 
