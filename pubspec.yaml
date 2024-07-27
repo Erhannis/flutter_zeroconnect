@@ -11,8 +11,8 @@ dependencies:
   flutter:
     sdk: flutter
   synchronized: ^3.0.1
-  nsd: ^2.3.0
-  uuid: ^3.0.7
+  nsd: ^3.0.0
+  uuid: ^4.4.2
   collection: ^1.16.0
 
 dev_dependencies:
