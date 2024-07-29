@@ -1,3 +1,7 @@
+## 1.5.1
+
+Updated deps
+
 ## 1.5.0
 
 Added ability to make MessageSocket send non-important; fixed bug
